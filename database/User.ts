@@ -1,5 +1,18 @@
-import {CreationOptional, DataTypes, InferAttributes, InferCreationAttributes, Model, NonAttribute} from "sequelize";
+import {
+    CreateOptions,
+    CreationOptional,
+    DataTypes,
+    InferAttributes,
+    InferCreationAttributes,
+    Model,
+    NonAttribute
+} from "sequelize";
 import sequelize from "./model";
+import {hashSync, compareSync} from "bcrypt";
+import dotenv from "dotenv";
+dotenv.config();
+
+const SALT = process.env.SALT || 10;
 
 class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
     declare id: CreationOptional<number>
@@ -13,6 +26,10 @@ class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
 
     get fullName(): NonAttribute<string> {
         return `${this.firstname} ${this.lastname}`;
+    }
+
+    public isValidPassword(password: string): boolean {
+        return compareSync(password, this.password);
     }
 }
 
@@ -61,6 +78,16 @@ User.init(
         sequelize,
         tableName: 'users',
         timestamps: true,
-        paranoid: true, // Enables `deletedAt` tracking
+        paranoid: true,
+        hooks: {
+            beforeCreate(user) {
+                user.password = hashSync(user.password, SALT);
+            },
+            beforeUpdate(user) {
+                if (user.changed('password')) {
+                    user.password = hashSync(user.password, SALT);
+                }
+            },
+        },
     }
 );
