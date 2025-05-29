@@ -13,7 +13,7 @@ import sequelize from './model';
 import { randomUUID } from 'node:crypto';
 import User from './User';
 
-class File extends Model<InferAttributes<File>, InferCreationAttributes<File>> {
+export default class File extends Model<InferAttributes<File>, InferCreationAttributes<File>> {
     declare id: CreationOptional<number>;
     declare uuid: CreationOptional<string>;
     declare name: string;
