@@ -12,4 +12,4 @@ File.belongsTo(User, {
     as: 'user'
 });
 
-export {User, File};
+export {User, File, sequelize}
