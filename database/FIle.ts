@@ -29,3 +29,47 @@ class File extends Model<InferAttributes<File>, InferCreationAttributes<File>> {
     declare getUser: HasOneGetAssociationMixin<User>;
     declare setUser: HasOneSetAssociationMixin<User, number>;
 }
+
+File.init(
+    {
+        id: {
+            type: DataTypes.INTEGER.UNSIGNED,
+            autoIncrement: true,
+            primaryKey: true,
+        },
+        uuid: {
+            type: DataTypes.UUID,
+            defaultValue: () => randomUUID(),
+            allowNull: false,
+            unique: true,
+        },
+        name: {
+            type: DataTypes.STRING,
+            allowNull: false,
+        },
+        file: {
+            type: DataTypes.BLOB('long'),
+            allowNull: false,
+        },
+        visibility: {
+            type: DataTypes.BOOLEAN,
+            allowNull: false,
+            defaultValue: true,
+        },
+        userId: {
+            type: DataTypes.INTEGER.UNSIGNED,
+            allowNull: false,
+        },
+        createdAt: DataTypes.DATE,
+        updatedAt: DataTypes.DATE,
+        deletedAt: DataTypes.DATE,
+    },
+    {
+        sequelize,
+        tableName: 'files',
+        timestamps: true,
+        paranoid: true,
+    }
+);
+
+export default File;
