@@ -71,5 +71,3 @@ File.init(
         paranoid: true,
     }
 );
-
-export default File;
