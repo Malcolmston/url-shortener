@@ -14,7 +14,7 @@ dotenv.config();
 
 const SALT = process.env.SALT || 10;
 
-class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
+export default class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
     declare id: CreationOptional<number>
     declare firstname: string
     declare lastname: string
