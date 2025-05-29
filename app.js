@@ -49,10 +49,13 @@ app.post("/signup", async (req, res) => {
       password,
     })
 
-    if( c ) return res.status(200).json({
-      ok: true,
-      location: "/dashboard",
-    })
+    if( c ) {
+      req.session.user = user;
+      return res.status(200).json({
+        ok: true,
+        location: "/dashboard",
+      })
+    }
   } catch (e) {
     return res.status(500).json({
       ok: false,
