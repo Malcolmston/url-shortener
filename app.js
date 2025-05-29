@@ -22,6 +22,46 @@ app.use(session({
 
 }))
 
+app.post("/signup", async (req, res) => {
+  const {firstname, lastname, username, password} = req.body;
+
+  try {
+    let user = await User.findOne({where: {username: username}});
+
+    if( !user) {
+      return res.status(402).json({
+        ok: false,
+        message: "User not found",
+        location: "/"
+      })
+    } else if( user.isSoftDeleted() ) {
+      return res.status(403).json({
+        ok: false,
+        message: "User is deleted",
+        location: "/"
+      })
+    }
+
+    let c = await User.create({
+      firstname,
+      lastname,
+      username,
+      password,
+    })
+
+    if( c ) return res.status(200).json({
+      ok: true,
+      location: "/dashboard",
+    })
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      message: e.message,
+      location: "/"
+    })
+  }
+});
+
 app.post("/upload", upload.any(), (req, res) => {
   console.log("Files:", req.files);
   console.log("Body:", req.body);
