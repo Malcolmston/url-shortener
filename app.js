@@ -28,7 +28,7 @@ app.post("/signup", async (req, res) => {
   try {
     let user = await User.findOne({where: {username: username}});
 
-    if( !user) {
+    if( user) {
       return res.status(402).json({
         ok: false,
         message: "User not found",
