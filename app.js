@@ -31,7 +31,7 @@ app.post("/signup", async (req, res) => {
     if( user) {
       return res.status(402).json({
         ok: false,
-        message: "User not found",
+        message: "User already exists",
         location: "/"
       })
     } else if( user.isSoftDeleted() ) {
