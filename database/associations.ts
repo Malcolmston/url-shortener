@@ -1,5 +1,6 @@
 import User from './User';
 import File from './File';
+import sequelize from "./model";
 
 // If each user has many files
 User.hasMany(File, {
