@@ -22,6 +22,39 @@ app.use(session({
 
 }))
 
+const userMil = async (req, res, next) => {
+  const sessionUser = req.session.user;
+  if (!sessionUser) {
+    return res.status(401).json({ ok: false, message: "Not authenticated" });
+  }
+
+  try {
+    const user = await User.findOne({
+      where: {
+        username: sessionUser.username
+      }
+    });
+
+    if (!user) {
+      return res.status(403).json({ ok: false, message: "User not found or deleted" });
+    }
+
+    req.user = user;
+    next();
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: "Server error" });
+  }
+};
+
+app.get("/dashboard", userMil,(req, res, next) => {
+  let user = req.user;
+
+  if( !user ) return res.redirect("/");
+
+   next();
+
+})
+
 app.post("/signup", async (req, res) => {
   const {firstname, lastname, username, password} = req.body;
 
