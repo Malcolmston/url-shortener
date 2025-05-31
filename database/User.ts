@@ -2,6 +2,16 @@ import {
     CreateOptions,
     CreationOptional,
     DataTypes,
+    HasManyAddAssociationMixin,
+    HasManyAddAssociationsMixin,
+    HasManyCountAssociationsMixin,
+    HasManyCreateAssociationMixin,
+    HasManyGetAssociationsMixin,
+    HasManyHasAssociationMixin,
+    HasManyHasAssociationsMixin,
+    HasManyRemoveAssociationMixin,
+    HasManyRemoveAssociationsMixin,
+    HasManySetAssociationsMixin,
     InferAttributes,
     InferCreationAttributes,
     Model,
@@ -11,6 +21,8 @@ import sequelize from "./model";
 import {hashSync, compareSync} from "bcrypt";
 import dotenv from "dotenv";
 dotenv.config();
+
+import File from "./File";
 
 const SALT = process.env.SALT || 10;
 
@@ -23,6 +35,19 @@ export default class User extends Model<InferAttributes<User>, InferCreationAttr
     declare createdAt: CreationOptional<Date>;
     declare updatedAt: CreationOptional<Date>;
     declare deletedAt: CreationOptional<Date>;
+
+    declare getFiles: HasManyGetAssociationsMixin<File>;
+    declare addFile: HasManyAddAssociationMixin<File, number>;
+    declare addFiles: HasManyAddAssociationsMixin<File, number>;
+    declare setFiles: HasManySetAssociationsMixin<File, number>;
+    declare removeFile: HasManyRemoveAssociationMixin<File, number>;
+    declare removeFiles: HasManyRemoveAssociationsMixin<File, number>;
+    declare hasFile: HasManyHasAssociationMixin<File, number>;
+    declare hasFiles: HasManyHasAssociationsMixin<File, number>;
+    declare countFiles: HasManyCountAssociationsMixin;
+    declare createFile: HasManyCreateAssociationMixin<File>;
+
+    declare files?: NonAttribute<File[]>; // For eager loading
 
     get fullName(): NonAttribute<string> {
         return `${this.firstname} ${this.lastname}`;
