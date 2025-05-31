@@ -190,7 +190,157 @@ app.post("/login", async (req, res) => {
       ok: false,
       message: e.message,
       location: "/"
-    })
+    });
+  }
+});
+
+app.post("/upload",userMil, upload.array("files"), async (req, res) => {
+  const {user} = req;
+  if (!user || user.deletedAt) {
+    return res.status(403).json({ ok: false, message: "User does not exist or is deleted" });
+  }
+
+  try {
+    const savedFiles = [];
+
+    for (const file of req.files) {
+      const newFile = await File.create({
+        name: file.originalname,
+        file: file.buffer,
+        type: file.mimetype,
+        visibility: true,
+        userId: user.id,
+      });
+      savedFiles.push(newFile);
+    }
+
+    await user.addFiles(savedFiles);
+
+    return res.status(200).json({
+      ok: true,
+      message: "Files uploaded successfully",
+      files: savedFiles.map(f => ({
+        id: f.id,
+        name: f.name,
+        uuid: f.uuid,
+        visibility: f.visibility,
+      })),
+    });
+  } catch (err) {
+    console.error("Upload error:", err);
+    return res.status(500).json({ ok: false, message: "Failed to upload files" });
+  }
+});
+
+app.get("/files",userMil, async (req, res) => {
+  const {user} = req;
+
+  if (!user || user.deletedAt) {
+    return res.status(403).json({ ok: false, message: "User does not exist or is deleted" });
+  }
+
+  let files = await user.getFiles({
+    attributes: ["id","name", "file", "visibility", "createdAt", "deletedAt"],
+    paranoid: false,
+    raw: true,
+  });
+
+  return res.status(200).json({
+    ok: true,
+    files
+  })
+})
+
+app.post("/action/:type/:id", userMil, async (req, res) => {
+  const {type, id} = req.params;
+  const {visibility = null, name = null} = req.body;
+  const {user} = req;
+
+  try {
+    let files = await user.getFiles({
+      where: {id},
+      paranoid: false,
+      limit: 1
+    });
+
+    // Fix: getFiles returns an array, so check if array is empty or get first item
+    if (!files || files.length === 0) {
+      return res.status(403).json({ ok: false, message: "file does not exist or is deleted" });
+    }
+
+    let file = files[0]; // Get the first (and only) file from the array
+
+    switch (type) {
+      case "visibility":
+        if (visibility === null || !(visibility === "1" || visibility === "0")) {
+          return res.status(403).json({ok: false, message: "Invalid param visibility"});
+        }
+
+        await file.update({ visibility: visibility === "1" });
+        return res.status(200).json({ok: true, message: "File visibility updated successfully"});
+
+      case "name":
+        if (name === null) {
+          return res.status(403).json({ok: false, message: "Invalid name"});
+        }
+
+        await file.update({ name: name });
+        return res.status(200).json({ok: true, message: "File updated successfully"});
+
+      case "delete":
+        if (file.isSoftDeleted()) {
+          return res.status(403).json({ok: false, message: "File was deleted"});
+        }
+
+        await file.destroy();
+        return res.status(200).json({ok: true, message: "File was deleted"});
+
+      case "recover":
+        if (!file.isSoftDeleted()) {
+          return res.status(403).json({ok: false, message: "File was not deleted"});
+        }
+
+        await file.restore();
+        return res.status(200).json({ok: true, message: "File was restored"});
+
+      default:
+        return res.status(500).json({ok: false, message: "invalid parameter"});
+    }
+
+  } catch (e) {
+    return res.status(500).json({
+      ok: false,
+      message: e.message,
+    });
+  }
+});
+
+app.put("/change", userMil, async (req, res) => {
+  const {user} = req;
+  let {username = null, firstname = null, lastname = null} = req.body;
+
+  try {
+    if( username === null) username = user.username;
+    if( firstname === null ) firstname = user.firstname;
+    if( lastname === null ) lastname = user.lastname;
+
+    const updatedUser = await User.findOne({
+      where: { id: user.id },
+      attributes: { exclude: ["password"] }
+    });
+
+    const userData = {
+      ...updatedUser.toJSON(),
+      files: await updatedUser.getFiles({ raw: true })
+    };
+
+    return res.status(200).json({
+      ok: true,
+      message: "User changed successfully",
+      user: userData  // Return updated user data
+    });
+  } catch (e) {
+    return res.status(500).json({ok: false, message: e.message})
   }
 })
 
