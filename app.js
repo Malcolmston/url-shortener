@@ -170,11 +170,13 @@ app.post("/login", async (req, res) => {
       })
     }
 
-    if( !user.isValidPassword(password) ) return res.status(403).json({
-      ok: false,
-      message: "incorrect username or password",
-      location: "/"
-    })
+    if (!user.isValidPassword(password)) {
+      return res.status(401).json({
+        ok: false,
+        message: "Incorrect username or password",
+        location: "/"
+      });
+    }
 
     req.session.user = user;
 
