@@ -185,6 +185,7 @@ app.post("/login", async (req, res) => {
       location: "/dashboard",
     })
   } catch (e) {
+    console.error('Login error:', e);
     return res.status(500).json({
       ok: false,
       message: e.message,
