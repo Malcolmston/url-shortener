@@ -68,7 +68,7 @@ app.get("/dashboard",async (req, res, next) => {
       return res.status(403).redirect("/")
     }
 
-  if( !user ) return res.redirect("/");
+    if (!user) return res.redirect("/");
 
    next();
 
