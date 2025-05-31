@@ -430,6 +430,17 @@ app.use((req, res) => {
   res.sendFile(path.join(__dirname, './short/build', 'index.html'));
 });
 
+
+// Global error handler must come after all routes and middleware
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({
+    success: false,
+    message: 'Something went wrong!'
+  });
+});
+
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
