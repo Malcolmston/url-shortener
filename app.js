@@ -3,7 +3,8 @@ const express = require("express");
 const multer = require("multer");
 const morgan = require("morgan")
 const session = require("express-session");
-const {sequelize, User, File} = require("./database/associations");
+const path = require("path");
+const mime = require('mime-types');
 require("dotenv").config();
 
 require('ts-node').register({
