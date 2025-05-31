@@ -131,7 +131,7 @@ app.post("/signup", async (req, res) => {
     })
 
     if( c ) {
-      req.session.user = user;
+      req.session.user = c;
       return res.status(200).json({
         ok: true,
         location: "/dashboard",
