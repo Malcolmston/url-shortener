@@ -1,4 +1,3 @@
-require("ts-node").register();
 const express = require("express");
 const multer = require("multer");
 const morgan = require("morgan")
@@ -31,7 +30,6 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {secure: false, httpOnly: true, sameSite: "strict"},
-
 }))
 
 const userMil = async (req, res, next) => {
@@ -161,10 +159,10 @@ app.post("/login", async (req, res) => {
       where: {username: username}
     });
 
-    if( !user) {
-      return res.status(402).json({
+    if (!user) {
+      return res.status(401).json({
         ok: false,
-        message: "User not fount",
+        message: "User not found",
         location: "/"
       });
     }
