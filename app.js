@@ -344,10 +344,90 @@ app.put("/change", userMil, async (req, res) => {
   }
 })
 
-app.post("/upload", upload.any(), (req, res) => {
-  console.log("Files:", req.files);
-  console.log("Body:", req.body);
-  res.json({ files: req.files, body: req.body });
+app.get("/uploads/:name", async (req, res) => {
+  const {name} = req.params;
+
+  console.log(name);
+
+  try {
+    let user = await User.findOne({
+      where: {
+        username: req.session.user.username
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ok: false, message: "User not found"});
+    }
+
+    let files = await user.getFiles({
+      where: {
+        name: name
+      },
+      paranoid: false,
+      limit: 1
+    });
+
+    if (!files || files.length === 0) {
+      return res.status(404).json({ok: false, message: "File not found"});
+    }
+
+    let file = files[0];
+
+    // Check if file is deleted
+    if (file.deletedAt) {
+      return res.status(410).json({ok: false, message: "File has been deleted"});
+    }
+
+    // Check visibility and authentication
+    if (!file.visibility) {
+      // Private file - check if user is authenticated and owns the file
+      const authHeader = req.headers.authorization;
+      if (!authHeader) {
+        return res.status(401).json({ok: false, message: "Authentication required for private files"});
+      }
+
+      // Add your authentication logic here
+      // For example, if using JWT:
+      try {
+        const token = authHeader.split(' ')[1]; // Assuming "Bearer <token>"
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+        if (decoded.username !== username) {
+          return res.status(403).json({ok: false, message: "Access denied"});
+        }
+      } catch (authError) {
+        return res.status(401).json({ok: false, message: "Invalid authentication"});
+      }
+    }
+
+    // Set appropriate headers
+    res.set({
+      'Content-Type': mime.lookup(file.name) || 'application/octet-stream',
+      'Content-Length': file.file ? file.file.length : 0,
+      'Cache-Control': file.visibility ? 'public, max-age=31536000' : 'private, no-cache',
+      'Content-Disposition': `inline; filename="${file.name}"`
+    });
+
+    // Send the file buffer
+    if (file.file) {
+      res.send(file.file);
+    } else {
+      res.status(404).json({ok: false, message: "File data not found"});
+    }
+
+  } catch (e) {
+    console.error("Error serving file:", e);
+    return res.status(500).json({ok: false, message: "Internal server error"});
+  }
+});
+
+// Serve static files from the React app
+app.use(express.static(path.join(__dirname, './short/build')));
+
+app.use((req, res) => {
+  console.log('Catch-all middleware hit, serving:', path.join(__dirname, './short/build', 'index.html'));
+  res.sendFile(path.join(__dirname, './short/build', 'index.html'));
 });
 
 app.listen(PORT, () => {
