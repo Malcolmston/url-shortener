@@ -30,7 +30,7 @@ app.use(session({
 const userMil = async (req, res, next) => {
   const sessionUser = req.session.user;
   if (!sessionUser) {
-    return res.status(401).json({ ok: false, message: "Not authenticated" });
+    return res.status(401).json({ ok: false, message: "Not authenticated", location: "/" });
   }
 
   try {
