@@ -47,7 +47,7 @@ const userMil = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
-    return res.status(500).json({ ok: false, message: "Server error" });
+    return res.status(500).json({ ok: false, message: "Server error", location: "/" });
   }
 };
 
