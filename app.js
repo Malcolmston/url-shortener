@@ -6,6 +6,12 @@ const session = require("express-session");
 const {sequelize, User, File} = require("./database/associations");
 require("dotenv").config();
 
+require('ts-node').register({
+  project: path.join(__dirname, "tsconfig.json")
+});
+
+const {sequelize, User, File} = require("./database/associations");
+
 const PORT = process.env.PORT || 3000;
 
 const app = express();
