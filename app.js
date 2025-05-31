@@ -11,6 +11,11 @@ const PORT = process.env.PORT || 3000;
 const app = express();
 const upload = multer();
 
+// Database sync
+(async () => {
+  await sequelize.sync({ force: false });
+})();
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(morgan("dev"))
