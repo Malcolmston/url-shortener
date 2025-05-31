@@ -159,8 +159,10 @@ app.post("/login", async (req, res) => {
         ok: false,
         message: "User not fount",
         location: "/"
-      })
-    } else if( user.isSoftDeleted() ) {
+      });
+    }
+
+    if (user.isSoftDeleted()) {
       return res.status(403).json({
         ok: false,
         message: "User is deleted",
