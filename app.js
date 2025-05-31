@@ -70,7 +70,15 @@ app.get("/dashboard",async (req, res, next) => {
 
     if (!user) return res.redirect("/");
 
-   next();
+    next();
+  } catch (error) {
+    console.error(error);
+    return res.status(500).redirect("/")
+  }
+})
+
+app.get("/user", userMil, async (req, res) => {
+  try {
 
 })
 
