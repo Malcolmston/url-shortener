@@ -41,7 +41,7 @@ const userMil = async (req, res, next) => {
     });
 
     if (!user) {
-      return res.status(403).json({ ok: false, message: "User not found or deleted" });
+      return res.status(403).json({ ok: false, message: "User not found or deleted", location: "/" });
     }
 
     req.user = user;
