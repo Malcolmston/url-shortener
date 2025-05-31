@@ -150,7 +150,9 @@ app.post("/login", async (req, res) => {
   const {username, password} = req.body;
 
   try {
-    let user = await User.findOne({where: {username: username}});
+    let user = await User.findOne({
+      where: {username: username}
+    });
 
     if( !user) {
       return res.status(402).json({
