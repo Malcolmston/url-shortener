@@ -80,6 +80,27 @@ app.get("/dashboard",async (req, res, next) => {
 app.get("/user", userMil, async (req, res) => {
   try {
 
+    let user = await User.findOne({
+      where: {
+        username: req.user.username
+      },
+      attributes: {
+        exclude: ["password"]
+      }
+    })
+
+    let data = {
+      ...user.toJSON(),
+      files: await user.getFiles({
+        raw: true,
+      })
+    }
+
+    return res.status(201).json(data);
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, message: e.message, location: "/" });
+  }
 })
 
 app.post("/signup", async (req, res) => {
