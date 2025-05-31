@@ -51,8 +51,22 @@ const userMil = async (req, res, next) => {
   }
 };
 
-app.get("/dashboard", userMil,(req, res, next) => {
-  let user = req.user;
+app.get("/dashboard",async (req, res, next) => {
+  const sessionUser = req.session.user;
+  if (!sessionUser) {
+    return res.status(401).redirect("/")
+  }
+
+  try {
+    const user = await User.findOne({
+      where: {
+        username: sessionUser.username
+      }
+    });
+
+    if (!user) {
+      return res.status(403).redirect("/")
+    }
 
   if( !user ) return res.redirect("/");
 
