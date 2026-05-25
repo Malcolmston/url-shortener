@@ -10,7 +10,9 @@ require('ts-node').register({
   project: path.join(__dirname, "tsconfig.json")
 });
 
-const {sequelize, User, File} = require("./database/associations");
+const {sequelize, User, File, Link} = require("./database/associations");
+const { generateSlug, validateSlug, validateUrl } = require('./utils/slugify');
+const bcrypt = require('bcrypt');
 
 const PORT = process.env.PORT || 3000;
 
@@ -55,6 +57,211 @@ const userMil = async (req, res, next) => {
     return res.status(500).json({ ok: false, message: "Server error", location: "/" });
   }
 };
+
+// ============================================================
+// LINK / URL SHORTENER ROUTES
+// ============================================================
+
+// Check slug availability
+app.get('/api/links/slug-check/:slug', async (req, res) => {
+  const { slug } = req.params;
+  const validation = validateSlug(slug);
+  if (!validation.valid) {
+    return res.json({ available: false, reason: validation.reason });
+  }
+  try {
+    const existing = await Link.findOne({ where: { slug } });
+    res.json({ available: !existing });
+  } catch (err) {
+    res.status(500).json({ available: false, reason: 'Server error' });
+  }
+});
+
+// Create a short link
+app.post('/api/links', userMil, async (req, res) => {
+  const {
+    url, customSlug, expiresAt, password,
+    redirectType = '302', hasPreview = false
+  } = req.body;
+
+  if (!validateUrl(url)) {
+    return res.status(400).json({ message: 'Invalid URL — must start with http:// or https://' });
+  }
+
+  let slug = customSlug;
+  if (slug) {
+    const validation = validateSlug(slug);
+    if (!validation.valid) return res.status(400).json({ message: validation.reason });
+    const exists = await Link.findOne({ where: { slug } });
+    if (exists) return res.status(409).json({ message: 'Slug already taken' });
+  } else {
+    // Auto-generate unique slug
+    let attempts = 0;
+    do {
+      slug = generateSlug(6 + Math.floor(attempts / 5));
+      attempts++;
+    } while (await Link.findOne({ where: { slug } }) && attempts < 20);
+  }
+
+  const linkData = {
+    slug,
+    originalUrl: url,
+    userId: req.session.userId,
+    redirectType: ['301','302','307'].includes(redirectType) ? redirectType : '302',
+    hasPreview: !!hasPreview,
+    expiresAt: expiresAt ? new Date(expiresAt) : null,
+    isPasswordProtected: !!password,
+  };
+
+  if (password) {
+    const saltRounds = parseInt(process.env.SALT || '10');
+    linkData.passwordHash = await bcrypt.hash(password, saltRounds);
+  }
+
+  try {
+    const link = await Link.create(linkData);
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.status(201).json({
+      ok: true,
+      link: {
+        id: link.id,
+        slug: link.slug,
+        shortUrl: `${baseUrl}/${link.slug}`,
+        originalUrl: link.originalUrl,
+        redirectType: link.redirectType,
+        hasPreview: link.hasPreview,
+        isPasswordProtected: link.isPasswordProtected,
+        expiresAt: link.expiresAt,
+        clicks: link.clicks,
+        createdAt: link.createdAt,
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to create link' });
+  }
+});
+
+// List user's links
+app.get('/api/links', userMil, async (req, res) => {
+  try {
+    const links = await Link.findAll({
+      where: { userId: req.session.userId },
+      order: [['createdAt', 'DESC']],
+      paranoid: false, // include soft-deleted
+    });
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.json({
+      links: links.map(l => ({
+        id: l.id,
+        slug: l.slug,
+        shortUrl: `${baseUrl}/${l.slug}`,
+        originalUrl: l.originalUrl,
+        redirectType: l.redirectType,
+        hasPreview: l.hasPreview,
+        isPasswordProtected: l.isPasswordProtected,
+        expiresAt: l.expiresAt,
+        isActive: l.isActive,
+        clicks: l.clicks,
+        createdAt: l.createdAt,
+        deletedAt: l.deletedAt,
+        isExpired: l.isExpired(),
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch links' });
+  }
+});
+
+// Update a link
+app.put('/api/links/:id', userMil, async (req, res) => {
+  try {
+    const link = await Link.findOne({
+      where: { id: req.params.id, userId: req.session.userId }
+    });
+    if (!link) return res.status(404).json({ message: 'Link not found' });
+
+    const { url, expiresAt, redirectType, hasPreview, isActive } = req.body;
+    if (url) {
+      if (!validateUrl(url)) return res.status(400).json({ message: 'Invalid URL' });
+      link.originalUrl = url;
+    }
+    if (expiresAt !== undefined) link.expiresAt = expiresAt ? new Date(expiresAt) : null;
+    if (redirectType && ['301','302','307'].includes(redirectType)) link.redirectType = redirectType;
+    if (hasPreview !== undefined) link.hasPreview = !!hasPreview;
+    if (isActive !== undefined) link.isActive = !!isActive;
+
+    await link.save();
+    res.json({ ok: true, link });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to update link' });
+  }
+});
+
+// Soft-delete a link
+app.delete('/api/links/:id', userMil, async (req, res) => {
+  try {
+    const link = await Link.findOne({
+      where: { id: req.params.id, userId: req.session.userId }
+    });
+    if (!link) return res.status(404).json({ message: 'Link not found' });
+    await link.destroy(); // paranoid soft delete
+    res.json({ ok: true, message: 'Link deleted' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to delete link' });
+  }
+});
+
+// Restore a soft-deleted link
+app.post('/api/links/:id/restore', userMil, async (req, res) => {
+  try {
+    const link = await Link.findOne({
+      where: { id: req.params.id, userId: req.session.userId },
+      paranoid: false,
+    });
+    if (!link) return res.status(404).json({ message: 'Link not found' });
+    await link.restore();
+    res.json({ ok: true, message: 'Link restored' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to restore link' });
+  }
+});
+
+// THE REDIRECT ROUTE — must be placed LAST among link routes but BEFORE static routes
+app.get('/:slug([a-zA-Z0-9_-]{3,50})', async (req, res) => {
+  const { slug } = req.params;
+
+  try {
+    const link = await Link.findOne({ where: { slug, isActive: true } });
+
+    if (!link) return res.status(404).sendFile(path.join(__dirname, 'short/build', 'index.html'));
+
+    // Expired link
+    if (link.isExpired()) {
+      return res.status(410).json({ message: 'This link has expired' });
+    }
+
+    // Password-protected link — redirect to unlock page
+    if (link.isPasswordProtected) {
+      return res.redirect(`/l/${slug}`);
+    }
+
+    // Preview interstitial
+    if (link.hasPreview) {
+      return res.redirect(`/p/${slug}`);
+    }
+
+    // Increment click count (non-blocking)
+    Link.increment('clicks', { where: { id: link.id } }).catch(() => {});
+
+    // Redirect
+    const statusCode = parseInt(link.redirectType) || 302;
+    return res.redirect(statusCode, link.originalUrl);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Redirect failed' });
+  }
+});
 
 app.get("/dashboard",async (req, res, next) => {
   const sessionUser = req.session.user;
