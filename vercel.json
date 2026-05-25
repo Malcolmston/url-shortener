@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "framework": null,
+  "functions": {
+    "app.js": {
+      "maxDuration": 30,
+      "memory": 512
+    }
+  },
+  "routes": [
+    { "src": "/static/(.*)", "dest": "/app.js" },
+    { "src": "/api/(.*)", "dest": "/app.js" },
+    { "src": "/uploads/(.*)", "dest": "/app.js" },
+    { "src": "/dashboard", "dest": "/app.js" },
+    { "src": "/login", "dest": "/app.js" },
+    { "src": "/signup", "dest": "/app.js" },
+    { "src": "/(.*)", "dest": "/app.js" }
+  ],
+  "env": {
+    "NODE_ENV": "production"
+  }
+}

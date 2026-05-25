@@ -4,7 +4,18 @@ const morgan = require("morgan")
 const session = require("express-session");
 const path = require("path");
 const mime = require('mime-types');
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 require("dotenv").config();
+
+// Validate required environment variables
+const REQUIRED_ENV = ['SESSION', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
+const missingEnv = REQUIRED_ENV.filter(key => !process.env[key]);
+if (missingEnv.length > 0) {
+  console.error(`[FATAL] Missing required environment variables: ${missingEnv.join(', ')}`);
+  console.error('Copy .env.example to .env and fill in the values');
+  if (process.env.NODE_ENV === 'production') process.exit(1);
+}
 
 require('ts-node').register({
   project: path.join(__dirname, "tsconfig.json")
@@ -16,6 +27,44 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 const upload = multer();
+
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc:   ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc:    ["'self'", "https://fonts.gstatic.com"],
+      scriptSrc:  ["'self'", "'unsafe-inline'"],
+      imgSrc:     ["'self'", "data:", "https:"],
+    }
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// Rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  message: { message: "Too many attempts, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 100,
+  message: { message: "Upload limit reached, try again later" },
+  keyGenerator: (req) => req.session?.userId?.toString() || req.ip,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60,
+  message: { message: "Rate limit exceeded" },
+});
+
+app.use('/api/', apiLimiter);
 
 // Database sync
 (async () => {
@@ -108,24 +157,22 @@ app.get("/user", userMil, async (req, res) => {
   }
 })
 
-app.post("/signup", async (req, res) => {
+app.post("/signup", authLimiter, async (req, res) => {
   const {firstname, lastname, username, password} = req.body;
 
   try {
     let user = await User.findOne({where: {username: username}});
 
-    if( user) {
-      return res.status(402).json({
-        ok: false,
-        message: "User already exists",
-        location: "/"
-      })
-    } else if( user.isSoftDeleted() ) {
-      return res.status(403).json({
-        ok: false,
-        message: "User is deleted",
-        location: "/"
-      })
+    if (user && user.isSoftDeleted()) {
+      await user.restore();
+      await user.update({ firstname, lastname, password });
+      req.session.user = user;
+      return res.status(200).json({
+        ok: true,
+        location: "/dashboard",
+      });
+    } else if (user) {
+      return res.status(409).json({ message: "Username already taken" });
     }
 
     let c = await User.create({
@@ -151,7 +198,7 @@ app.post("/signup", async (req, res) => {
   }
 });
 
-app.post("/login", async (req, res) => {
+app.post("/login", authLimiter, async (req, res) => {
   const {username, password} = req.body;
 
   try {
@@ -199,7 +246,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-app.post("/upload",userMil, upload.array("files"), async (req, res) => {
+app.post("/upload", uploadLimiter, userMil, upload.array("files"), async (req, res) => {
   const {user} = req;
   if (!user || user.deletedAt) {
     return res.status(403).json({ ok: false, message: "User does not exist or is deleted" });
@@ -329,20 +376,20 @@ app.put("/change", userMil, async (req, res) => {
     if( firstname === null ) firstname = user.firstname;
     if( lastname === null ) lastname = user.lastname;
 
-    const updatedUser = await User.findOne({
-      where: { id: user.id },
-      attributes: { exclude: ["password"] }
-    });
-
-    const userData = {
-      ...updatedUser.toJSON(),
-      files: await updatedUser.getFiles({ raw: true })
-    };
+    const updates = { username, firstname, lastname };
+    Object.assign(user, updates);
+    await user.save();
 
     return res.status(200).json({
       ok: true,
-      message: "User changed successfully",
-      user: userData  // Return updated user data
+      user: {
+        id: user.id,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        username: user.username,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      }
     });
   } catch (e) {
     return res.status(500).json({ok: false, message: e.message})
@@ -446,6 +493,11 @@ app.use((err, req, res, next) => {
 });
 
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+// Export for Vercel serverless
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Snip server running on port ${PORT}`);
+  });
+}
+
+module.exports = app;
