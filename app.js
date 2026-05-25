@@ -4,7 +4,18 @@ const morgan = require("morgan")
 const session = require("express-session");
 const path = require("path");
 const mime = require('mime-types');
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 require("dotenv").config();
+
+// Validate required environment variables
+const REQUIRED_ENV = ['SESSION', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'];
+const missingEnv = REQUIRED_ENV.filter(key => !process.env[key]);
+if (missingEnv.length > 0) {
+  console.error(`[FATAL] Missing required environment variables: ${missingEnv.join(', ')}`);
+  console.error('Copy .env.example to .env and fill in the values');
+  if (process.env.NODE_ENV === 'production') process.exit(1);
+}
 
 require('ts-node').register({
   project: path.join(__dirname, "tsconfig.json")
@@ -16,6 +27,44 @@ const PORT = process.env.PORT || 3000;
 
 const app = express();
 const upload = multer();
+
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc:   ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc:    ["'self'", "https://fonts.gstatic.com"],
+      scriptSrc:  ["'self'", "'unsafe-inline'"],
+      imgSrc:     ["'self'", "data:", "https:"],
+    }
+  },
+  crossOriginEmbedderPolicy: false,
+}));
+
+// Rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  message: { message: "Too many attempts, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 100,
+  message: { message: "Upload limit reached, try again later" },
+  keyGenerator: (req) => req.session?.userId?.toString() || req.ip,
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 60,
+  message: { message: "Rate limit exceeded" },
+});
+
+app.use('/api/', apiLimiter);
 
 // Database sync
 (async () => {
@@ -108,24 +157,22 @@ app.get("/user", userMil, async (req, res) => {
   }
 })
 
-app.post("/signup", async (req, res) => {
+app.post("/signup", authLimiter, async (req, res) => {
   const {firstname, lastname, username, password} = req.body;
 
   try {
     let user = await User.findOne({where: {username: username}});
 
-    if( user) {
-      return res.status(402).json({
-        ok: false,
-        message: "User already exists",
-        location: "/"
-      })
-    } else if( user.isSoftDeleted() ) {
-      return res.status(403).json({
-        ok: false,
-        message: "User is deleted",
-        location: "/"
-      })
+    if (user && user.isSoftDeleted()) {
+      await user.restore();
+      await user.update({ firstname, lastname, password });
+      req.session.user = user;
+      return res.status(200).json({
+        ok: true,
+        location: "/dashboard",
+      });
+    } else if (user) {
+      return res.status(409).json({ message: "Username already taken" });
     }
 
     let c = await User.create({
@@ -151,7 +198,7 @@ app.post("/signup", async (req, res) => {
   }
 });
 
-app.post("/login", async (req, res) => {
+app.post("/login", authLimiter, async (req, res) => {
   const {username, password} = req.body;
 
   try {
@@ -199,7 +246,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-app.post("/upload",userMil, upload.array("files"), async (req, res) => {
+app.post("/upload", uploadLimiter, userMil, upload.array("files"), async (req, res) => {
   const {user} = req;
   if (!user || user.deletedAt) {
     return res.status(403).json({ ok: false, message: "User does not exist or is deleted" });
@@ -329,20 +376,20 @@ app.put("/change", userMil, async (req, res) => {
     if( firstname === null ) firstname = user.firstname;
     if( lastname === null ) lastname = user.lastname;
 
-    const updatedUser = await User.findOne({
-      where: { id: user.id },
-      attributes: { exclude: ["password"] }
-    });
-
-    const userData = {
-      ...updatedUser.toJSON(),
-      files: await updatedUser.getFiles({ raw: true })
-    };
+    const updates = { username, firstname, lastname };
+    Object.assign(user, updates);
+    await user.save();
 
     return res.status(200).json({
       ok: true,
-      message: "User changed successfully",
-      user: userData  // Return updated user data
+      user: {
+        id: user.id,
+        firstname: user.firstname,
+        lastname: user.lastname,
+        username: user.username,
+        createdAt: user.createdAt,
+        updatedAt: user.updatedAt,
+      }
     });
   } catch (e) {
     return res.status(500).json({ok: false, message: e.message})
@@ -350,81 +397,51 @@ app.put("/change", userMil, async (req, res) => {
 })
 
 app.get("/uploads/:name", async (req, res) => {
-  const {name} = req.params;
-
-  console.log(name);
-
   try {
-    let user = await User.findOne({
-      where: {
-        username: req.session.user.username
-      }
-    });
-
-    if (!user) {
-      return res.status(404).json({ok: false, message: "User not found"});
+    const file = await File.findOne({ where: { name: req.params.name } });
+    if (!file || file.deletedAt) {
+      return res.status(404).json({ message: "File not found" });
     }
 
-    let files = await user.getFiles({
-      where: {
-        name: name
-      },
-      paranoid: false,
-      limit: 1
-    });
-
-    if (!files || files.length === 0) {
-      return res.status(404).json({ok: false, message: "File not found"});
-    }
-
-    let file = files[0];
-
-    // Check if file is deleted
-    if (file.deletedAt) {
-      return res.status(410).json({ok: false, message: "File has been deleted"});
-    }
-
-    // Check visibility and authentication
+    // Private files require authenticated owner
     if (!file.visibility) {
-      // Private file - check if user is authenticated and owns the file
-      const authHeader = req.headers.authorization;
-      if (!authHeader) {
-        return res.status(401).json({ok: false, message: "Authentication required for private files"});
+      if (!req.session || !req.session.userId) {
+        return res.status(403).json({ message: "This file is private" });
       }
-
-      // Add your authentication logic here
-      // For example, if using JWT:
-      try {
-        const token = authHeader.split(' ')[1]; // Assuming "Bearer <token>"
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-        if (decoded.username !== username) {
-          return res.status(403).json({ok: false, message: "Access denied"});
-        }
-      } catch (authError) {
-        return res.status(401).json({ok: false, message: "Invalid authentication"});
+      if (file.userId !== req.session.userId) {
+        return res.status(403).json({ message: "Access denied" });
       }
     }
 
-    // Set appropriate headers
-    res.set({
-      'Content-Type': mime.lookup(file.name) || 'application/octet-stream',
-      'Content-Length': file.file ? file.file.length : 0,
-      'Cache-Control': file.visibility ? 'public, max-age=31536000' : 'private, no-cache',
-      'Content-Disposition': `inline; filename="${file.name}"`
-    });
-
-    // Send the file buffer
-    if (file.file) {
-      res.send(file.file);
-    } else {
-      res.status(404).json({ok: false, message: "File data not found"});
-    }
-
-  } catch (e) {
-    console.error("Error serving file:", e);
-    return res.status(500).json({ok: false, message: "Internal server error"});
+    const mimeType = mime.lookup(file.name) || 'application/octet-stream';
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${file.name}"`);
+    res.send(file.file);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to retrieve file" });
   }
+});
+
+// Health checks
+app.get('/health/live', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+app.get('/health/ready', async (req, res) => {
+  try {
+    await sequelize.authenticate();
+    res.json({ status: 'ok', db: 'connected', timestamp: new Date().toISOString() });
+  } catch (err) {
+    res.status(503).json({ status: 'error', db: 'disconnected', error: err.message });
+  }
+});
+
+app.get('/health/version', (req, res) => {
+  res.json({
+    version: process.env.npm_package_version || '1.0.0',
+    node: process.version,
+    env: process.env.NODE_ENV || 'development',
+  });
 });
 
 // Serve static files from the React app
