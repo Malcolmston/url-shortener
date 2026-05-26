@@ -19,7 +19,7 @@
     "mysql2": "^3.9.4",
     "bcrypt": "^5.1.1",
     "iron-session": "^8.0.3",
-    "uuid": "^9.0.1",
+    "uuid": "^14.0.0",
     "mime-types": "^2.1.35",
     "@fortawesome/fontawesome-svg-core": "^6.5.2",
     "@fortawesome/free-regular-svg-icons": "^6.5.2",
