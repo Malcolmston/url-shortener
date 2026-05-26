@@ -1,0 +1,89 @@
+# CodeRabbit configuration for Snip (url-shortener)
+# https://docs.coderabbit.ai/getting-started/configure-coderabbit
+
+language: "en-US"
+
+tone_instructions: >
+  Be concise and direct. Focus on correctness bugs, security issues, and
+  significant performance problems. Skip style nits unless they affect
+  readability or correctness. Acknowledge good patterns when you see them.
+
+early_access: false
+
+reviews:
+  profile: "chill"          # assertive | chill
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_placeholder: "@coderabbitai summary"
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "claude/code-review-feature-plan-b3dwr"
+      - "main"
+
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/short/build/**"
+    - "!**/*.lock"
+    - "!**/*.min.js"
+    - "!**/*.min.css"
+    - "!**/dist/**"
+
+  path_instructions:
+    - path: "database/**/*.ts"
+      instructions: |
+        Check for:
+        - Missing paranoid:true on user-owned data models (soft delete requirement)
+        - Sensitive fields (password, token, keyHash) that should be excluded from default queries
+        - Missing indexes on foreign keys and frequently queried columns
+        - Sequelize association correctness (hasMany/belongsTo symmetry)
+
+    - path: "app.js"
+      instructions: |
+        Check for:
+        - Routes that mutate data without calling .save() or .update()
+        - Session/auth checks using req.session.user instead of req.isAuthenticated()
+        - Any reference to undefined variables (e.g. jwt, bcrypt without require)
+        - Missing error handling in async route handlers
+        - SQL injection risks via unsanitised query params
+
+    - path: "routes/**/*.js"
+      instructions: |
+        Check for:
+        - Missing requireAuth middleware on protected endpoints
+        - User-ownership checks before any data mutation (userId === req.user.id)
+        - Input validation before database operations
+        - Proper HTTP status codes (409 conflict vs 400 bad request, etc.)
+
+    - path: "short/src/**/*.jsx"
+      instructions: |
+        Check for:
+        - Missing loading and error states
+        - fetch() calls without error handling
+        - Keys on list items
+        - Accessibility: interactive elements must be keyboard reachable, images need alt text
+        - Dark mode: all new Tailwind classes should have dark: variants
+        - FontAwesome Pro icons (use free-solid-svg-icons or free-regular-svg-icons only)
+        - Blue-* colour classes that should be violet-* per design system
+
+    - path: "utils/**/*.js"
+      instructions: |
+        Check for:
+        - Cryptographic operations using weak algorithms (MD5, SHA1 for security purposes)
+        - Raw IP addresses being logged or stored (must be hashed with hashIp())
+        - API keys or tokens being stored in plaintext
+
+    - path: ".github/workflows/**/*.yml"
+      instructions: |
+        Check for:
+        - Secrets referenced that aren't declared (VERCEL_TOKEN, etc.)
+        - Missing timeout-minutes on jobs
+        - Pinned action versions (prefer @v4 over @main)
+        - MySQL/Redis service health checks before running tests
+
+chat:
+  auto_reply: true
