@@ -4,8 +4,11 @@ import {
   faCloudArrowUp, faShield, faPen, faCheck, faKey, faEye, faEyeSlash,
   faTrash, faRotateLeft, faDesktop
 } from "@fortawesome/free-solid-svg-icons";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import AppShell from "./components/layout/AppShell";
+
+// Storage key used throughout the app for theme persistence
+const THEME_STORAGE_KEY = "snip-theme";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -306,16 +309,25 @@ function SecurityTab() {
 
 function PreferencesTab() {
   const [theme, setTheme] = useState(() => {
-    if (typeof document !== "undefined") return document.documentElement.getAttribute("data-theme") || "light";
+    // Prefer persisted value; fall back to current DOM attribute
+    if (typeof window !== "undefined") {
+      return localStorage.getItem(THEME_STORAGE_KEY)
+        || document.documentElement.getAttribute("data-theme")
+        || "light";
+    }
     return "light";
   });
   const [defaultVisibility, setDefaultVisibility] = useState("public");
 
-  const applyTheme = (t) => {
+  const applyTheme = useCallback((t) => {
     setTheme(t);
+    // Update the data-theme attribute (used by [data-theme="dark"] CSS rules)
     document.documentElement.setAttribute("data-theme", t);
-    localStorage.setItem("theme", t);
-  };
+    // Toggle the `dark` class required by Tailwind's `dark:` variant
+    document.documentElement.classList.toggle("dark", t === "dark");
+    // Persist with the canonical key
+    localStorage.setItem(THEME_STORAGE_KEY, t);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -373,7 +385,12 @@ export default function Account() {
   const [userData, setUserData] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [activeTab, setActiveTab] = useState("profile");
+  // Initialise from ?tab= query param so direct links work (e.g. /account?tab=security)
+  const [activeTab, setActiveTab] = useState(() => {
+    if (typeof window === "undefined") return "profile";
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    return TABS.some((t) => t.id === tab) ? tab : "profile";
+  });
 
   useEffect(() => {
     fetch("/user")
@@ -436,7 +453,13 @@ export default function Account() {
             {TABS.map(({ id, label, icon }) => (
               <button
                 key={id}
-                onClick={() => setActiveTab(id)}
+                onClick={() => {
+                  setActiveTab(id);
+                  // Keep URL in sync without triggering a navigation
+                  const url = new URL(window.location.href);
+                  url.searchParams.set("tab", id);
+                  window.history.replaceState(null, "", url.toString());
+                }}
                 className={[
                   "flex items-center gap-2 px-5 py-3.5 text-sm font-medium border-b-2 transition-colors",
                   activeTab === id
