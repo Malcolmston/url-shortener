@@ -6,6 +6,7 @@ const path = require("path");
 const mime = require('mime-types');
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const bcrypt = require("bcrypt");
 require("dotenv").config();
 
 // Validate required environment variables
@@ -24,6 +25,9 @@ require('ts-node').register({
 const {sequelize, User, File, Link} = require("./database/associations");
 const { generateSlug, validateSlug, validateUrl } = require('./utils/slugify');
 const bcrypt = require('bcrypt');
+const {sequelize, User, File, PasswordResetToken, ApiKey, UserSession} = require("./database/associations");
+const { v4: uuidv4 } = require('uuid');
+const { generateApiKey, hashApiKey } = require('./utils/apiKey');
 
 const PORT = process.env.PORT || 3000;
 
@@ -83,6 +87,21 @@ app.use(session({
   cookie: {secure: false, httpOnly: true, sameSite: "strict"},
 }))
 
+// Track session activity
+app.use(async (req, res, next) => {
+  if (req.session && req.session.userId && req.sessionID) {
+    // Non-blocking session tracking
+    UserSession.upsert({
+      userId:         req.session.userId,
+      sessionId:      req.sessionID,
+      ipAddress:      req.ip,
+      userAgent:      req.headers['user-agent']?.substring(0, 500),
+      lastActivityAt: new Date(),
+    }).catch(() => {}); // never block request on this
+  }
+  next();
+});
+
 const userMil = async (req, res, next) => {
   const sessionUser = req.session.user;
   if (!sessionUser) {
@@ -99,13 +118,14 @@ const userMil = async (req, res, next) => {
     }
 
     req.user = user;
+    // Ensure session.userId is always populated for shared auth logic
+    req.session.userId = user.id;
     next();
   } catch (error) {
     return res.status(500).json({ ok: false, message: "Server error", location: "/" });
   }
 };
 
-// ============================================================
 // LINK / URL SHORTENER ROUTES
 // ============================================================
 
@@ -163,6 +183,35 @@ app.post('/api/links', userMil, async (req, res) => {
   if (password) {
     const saltRounds = parseInt(process.env.SALT || '10');
     linkData.passwordHash = await bcrypt.hash(password, saltRounds);
+=======
+// API Key authentication middleware
+const apiKeyAuth = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ message: 'API key required. Use: Authorization: Bearer sk_snp_...' });
+  }
+  const rawKey = authHeader.slice(7);
+  const keyHash = hashApiKey(rawKey);
+  const apiKey = await ApiKey.findOne({
+    where: { keyHash, isActive: true },
+    include: [{ model: User, as: 'user' }]
+  });
+  if (!apiKey || apiKey.isExpired()) {
+    return res.status(401).json({ message: 'Invalid or expired API key' });
+  }
+  // Update last used (non-blocking)
+  ApiKey.update({ lastUsedAt: new Date() }, { where: { id: apiKey.id } }).catch(() => {});
+  req.apiKey = apiKey;
+  req.apiUser = apiKey.user;
+  req.session = req.session || {};
+  req.session.userId = apiKey.userId; // allow shared auth logic
+  next();
+};
+
+app.get("/dashboard",async (req, res, next) => {
+  const sessionUser = req.session.user;
+  if (!sessionUser) {
+    return res.status(401).redirect("/")
   }
 
   try {
@@ -578,6 +627,243 @@ app.get('/:slug([a-zA-Z0-9_-]{3,50})', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Redirect failed' });
+  }
+});
+
+// ============================================================
+// AUTH IMPROVEMENT ROUTES
+// ============================================================
+
+// Logout
+app.post('/logout', (req, res) => {
+  req.session.destroy(() => {
+    res.clearCookie('connect.sid');
+    res.json({ ok: true, message: 'Logged out' });
+  });
+});
+
+// Forgot password — sends reset token (email sending is a stub)
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { username } = req.body;
+    if (!username) return res.status(400).json({ message: 'Username is required' });
+
+    const user = await User.findOne({ where: { username } });
+    // Always return 200 to prevent username enumeration
+    if (!user) return res.json({ ok: true, message: 'If that account exists, a reset email has been sent.' });
+
+    // Invalidate existing tokens
+    await PasswordResetToken.destroy({ where: { userId: user.id, usedAt: null } });
+
+    // Create new token
+    const token = await PasswordResetToken.create({
+      userId: user.id,
+      token: uuidv4(),
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000), // 1 hour
+    });
+
+    // TODO: Send email with reset link
+    const resetUrl = `${req.protocol}://${req.get('host')}/reset-password?token=${token.token}`;
+    console.log(`[DEBUG] Password reset link for ${username}: ${resetUrl}`);
+
+    res.json({ ok: true, message: 'If that account exists, a reset email has been sent.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to process request' });
+  }
+});
+
+// Reset password with token
+//
+// IMPORTANT: Do NOT pre-hash the password before user.update().
+// User.ts has a beforeUpdate hook that re-hashes any changed password
+// field automatically.  Pre-hashing here would store bcrypt(bcrypt(pw)),
+// making the new password unusable at login.
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) return res.status(400).json({ message: 'Token and password are required' });
+    if (password.length < 8) return res.status(400).json({ message: 'Password must be at least 8 characters' });
+
+    const resetToken = await PasswordResetToken.findOne({
+      where: { token },
+      include: [{ model: User, as: 'user' }]
+    });
+
+    if (!resetToken)                return res.status(400).json({ message: 'Invalid reset token' });
+    if (resetToken.isExpired())     return res.status(400).json({ message: 'Reset token has expired. Please request a new one.' });
+    if (resetToken.isUsed())        return res.status(400).json({ message: 'Reset token has already been used.' });
+
+    // Pass raw password — User.ts beforeUpdate hook (hashSync) will hash it.
+    await resetToken.user.update({ password });
+    await resetToken.update({ usedAt: new Date() });
+
+    res.json({ ok: true, message: 'Password updated successfully. You can now log in.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to reset password' });
+  }
+});
+
+// ── API KEY MANAGEMENT ──
+
+// List API keys (session auth)
+app.get('/api/api-keys', userMil, async (req, res) => {
+  try {
+    const keys = await ApiKey.findAll({
+      where: { userId: req.session.userId },
+      attributes: ['id', 'keyPrefix', 'label', 'scopes', 'lastUsedAt', 'expiresAt', 'isActive', 'createdAt'],
+      order: [['createdAt', 'DESC']],
+    });
+    res.json({ keys });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch API keys' });
+  }
+});
+
+// Create API key
+app.post('/api/api-keys', userMil, async (req, res) => {
+  try {
+    const { label, scopes = ['*'], expiresAt } = req.body;
+    if (!label || label.trim().length < 1) return res.status(400).json({ message: 'Label is required' });
+
+    // Max 20 active keys per user
+    const count = await ApiKey.count({ where: { userId: req.session.userId, isActive: true } });
+    if (count >= 20) return res.status(429).json({ message: 'Maximum 20 API keys allowed. Delete some to create new ones.' });
+
+    const { rawKey, keyHash, keyPrefix } = generateApiKey();
+    const key = await ApiKey.create({
+      userId:    req.session.userId,
+      keyHash,
+      keyPrefix,
+      label:     label.trim(),
+      scopes:    JSON.stringify(Array.isArray(scopes) ? scopes : ['*']),
+      expiresAt: expiresAt ? new Date(expiresAt) : null,
+    });
+
+    res.status(201).json({
+      ok: true,
+      key: {
+        id:        key.id,
+        rawKey,           // ONLY returned on creation — never stored in plaintext
+        keyPrefix,
+        label:     key.label,
+        scopes:    key.getScopesArray(),
+        expiresAt: key.expiresAt,
+        createdAt: key.createdAt,
+      },
+      warning: 'Copy this key now — it will NOT be shown again.',
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to create API key' });
+  }
+});
+
+// Revoke / delete API key
+app.delete('/api/api-keys/:id', userMil, async (req, res) => {
+  try {
+    const key = await ApiKey.findOne({ where: { id: req.params.id, userId: req.session.userId } });
+    if (!key) return res.status(404).json({ message: 'API key not found' });
+    await key.update({ isActive: false });
+    await key.destroy();
+    res.json({ ok: true, message: 'API key revoked' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to revoke API key' });
+  }
+});
+
+// ── SESSION MANAGEMENT ──
+
+// List active sessions
+app.get('/api/sessions', userMil, async (req, res) => {
+  try {
+    const sessions = await UserSession.findAll({
+      where: { userId: req.session.userId },
+      order: [['lastActivityAt', 'DESC']],
+      limit: 20,
+    });
+    res.json({
+      sessions: sessions.map(s => ({
+        id: s.id,
+        ipAddress: s.ipAddress,
+        userAgent: s.userAgent,
+        lastActivityAt: s.lastActivityAt,
+        createdAt: s.createdAt,
+        isCurrent: s.sessionId === req.sessionID,
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to fetch sessions' });
+  }
+});
+
+// Revoke a specific session
+// Deletes from both the UserSession tracking table AND the session store so
+// the target device's cookie is immediately invalidated.
+app.delete('/api/sessions/:id', userMil, async (req, res) => {
+  try {
+    const session = await UserSession.findOne({
+      where: { id: req.params.id, userId: req.session.userId }
+    });
+    if (!session) return res.status(404).json({ message: 'Session not found' });
+    if (session.sessionId === req.sessionID) {
+      return res.status(400).json({ message: 'Cannot revoke your current session. Use POST /logout instead.' });
+    }
+
+    const sessionIdToRevoke = session.sessionId;
+    await session.destroy(); // Remove tracking row
+
+    // Also remove from the session store so the cookie becomes invalid immediately.
+    // req.sessionStore is always present when express-session is configured.
+    if (req.sessionStore && sessionIdToRevoke) {
+      req.sessionStore.destroy(sessionIdToRevoke, (err) => {
+        if (err) console.error('Failed to destroy session from store:', err);
+      });
+    }
+
+    res.json({ ok: true, message: 'Session revoked' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to revoke session' });
+  }
+});
+
+// Revoke all other sessions
+app.post('/api/sessions/revoke-others', userMil, async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+
+    // Collect session IDs to revoke before deleting tracking rows
+    const sessionsToRevoke = await UserSession.findAll({
+      where: {
+        userId:    req.session.userId,
+        sessionId: { [Op.ne]: req.sessionID },
+      },
+      attributes: ['id', 'sessionId'],
+    });
+
+    const sessionIds = sessionsToRevoke.map(s => s.sessionId).filter(Boolean);
+
+    // Delete tracking rows
+    await UserSession.destroy({
+      where: {
+        userId:    req.session.userId,
+        sessionId: { [Op.ne]: req.sessionID },
+      },
+    });
+
+    // Destroy each session in the store (non-blocking)
+    if (req.sessionStore) {
+      sessionIds.forEach(sid => {
+        req.sessionStore.destroy(sid, (err) => {
+          if (err) console.error(`Failed to destroy session ${sid} from store:`, err);
+        });
+      });
+    }
+
+    res.json({ ok: true, message: 'All other sessions have been revoked' });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to revoke sessions' });
   }
 });
 
