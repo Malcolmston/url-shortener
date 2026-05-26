@@ -106,7 +106,7 @@ app.post('/api/links', userMil, async (req, res) => {
   const linkData = {
     slug,
     originalUrl: url,
-    userId: req.session.userId,
+    userId: req.user.id,  // use req.user.id set by userMil — req.session.userId is not set
     redirectType: ['301','302','307'].includes(redirectType) ? redirectType : '302',
     hasPreview: !!hasPreview,
     expiresAt: expiresAt ? new Date(expiresAt) : null,
@@ -146,7 +146,7 @@ app.post('/api/links', userMil, async (req, res) => {
 app.get('/api/links', userMil, async (req, res) => {
   try {
     const links = await Link.findAll({
-      where: { userId: req.session.userId },
+      where: { userId: req.user.id },  // use req.user.id — req.session.userId is not set
       order: [['createdAt', 'DESC']],
       paranoid: false, // include soft-deleted
     });
@@ -177,7 +177,7 @@ app.get('/api/links', userMil, async (req, res) => {
 app.put('/api/links/:id', userMil, async (req, res) => {
   try {
     const link = await Link.findOne({
-      where: { id: req.params.id, userId: req.session.userId }
+      where: { id: req.params.id, userId: req.user.id }  // use req.user.id
     });
     if (!link) return res.status(404).json({ message: 'Link not found' });
 
@@ -202,7 +202,7 @@ app.put('/api/links/:id', userMil, async (req, res) => {
 app.delete('/api/links/:id', userMil, async (req, res) => {
   try {
     const link = await Link.findOne({
-      where: { id: req.params.id, userId: req.session.userId }
+      where: { id: req.params.id, userId: req.user.id }  // use req.user.id
     });
     if (!link) return res.status(404).json({ message: 'Link not found' });
     await link.destroy(); // paranoid soft delete
@@ -216,7 +216,7 @@ app.delete('/api/links/:id', userMil, async (req, res) => {
 app.post('/api/links/:id/restore', userMil, async (req, res) => {
   try {
     const link = await Link.findOne({
-      where: { id: req.params.id, userId: req.session.userId },
+      where: { id: req.params.id, userId: req.user.id },  // use req.user.id
       paranoid: false,
     });
     if (!link) return res.status(404).json({ message: 'Link not found' });
@@ -227,41 +227,11 @@ app.post('/api/links/:id/restore', userMil, async (req, res) => {
   }
 });
 
-// THE REDIRECT ROUTE — must be placed LAST among link routes but BEFORE static routes
-app.get('/:slug([a-zA-Z0-9_-]{3,50})', async (req, res) => {
-  const { slug } = req.params;
-
-  try {
-    const link = await Link.findOne({ where: { slug, isActive: true } });
-
-    if (!link) return res.status(404).sendFile(path.join(__dirname, 'short/build', 'index.html'));
-
-    // Expired link
-    if (link.isExpired()) {
-      return res.status(410).json({ message: 'This link has expired' });
-    }
-
-    // Password-protected link — redirect to unlock page
-    if (link.isPasswordProtected) {
-      return res.redirect(`/l/${slug}`);
-    }
-
-    // Preview interstitial
-    if (link.hasPreview) {
-      return res.redirect(`/p/${slug}`);
-    }
-
-    // Increment click count (non-blocking)
-    Link.increment('clicks', { where: { id: link.id } }).catch(() => {});
-
-    // Redirect
-    const statusCode = parseInt(link.redirectType) || 302;
-    return res.redirect(statusCode, link.originalUrl);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Redirect failed' });
-  }
-});
+// ============================================================
+// STANDARD APP ROUTES
+// Note: /:slug redirect is placed AFTER these specific routes so that
+// /dashboard, /user, /signup etc. are never intercepted by the slug handler.
+// ============================================================
 
 app.get("/dashboard",async (req, res, next) => {
   const sessionUser = req.session.user;
@@ -475,12 +445,11 @@ app.post("/action/:type/:id", userMil, async (req, res) => {
       limit: 1
     });
 
-    // Fix: getFiles returns an array, so check if array is empty or get first item
     if (!files || files.length === 0) {
       return res.status(403).json({ ok: false, message: "file does not exist or is deleted" });
     }
 
-    let file = files[0]; // Get the first (and only) file from the array
+    let file = files[0];
 
     switch (type) {
       case "visibility":
@@ -549,7 +518,7 @@ app.put("/change", userMil, async (req, res) => {
     return res.status(200).json({
       ok: true,
       message: "User changed successfully",
-      user: userData  // Return updated user data
+      user: userData
     });
   } catch (e) {
     return res.status(500).json({ok: false, message: e.message})
@@ -586,23 +555,18 @@ app.get("/uploads/:name", async (req, res) => {
 
     let file = files[0];
 
-    // Check if file is deleted
     if (file.deletedAt) {
       return res.status(410).json({ok: false, message: "File has been deleted"});
     }
 
-    // Check visibility and authentication
     if (!file.visibility) {
-      // Private file - check if user is authenticated and owns the file
       const authHeader = req.headers.authorization;
       if (!authHeader) {
         return res.status(401).json({ok: false, message: "Authentication required for private files"});
       }
 
-      // Add your authentication logic here
-      // For example, if using JWT:
       try {
-        const token = authHeader.split(' ')[1]; // Assuming "Bearer <token>"
+        const token = authHeader.split(' ')[1];
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
         if (decoded.username !== username) {
@@ -613,7 +577,6 @@ app.get("/uploads/:name", async (req, res) => {
       }
     }
 
-    // Set appropriate headers
     res.set({
       'Content-Type': mime.lookup(file.name) || 'application/octet-stream',
       'Content-Length': file.file ? file.file.length : 0,
@@ -621,7 +584,6 @@ app.get("/uploads/:name", async (req, res) => {
       'Content-Disposition': `inline; filename="${file.name}"`
     });
 
-    // Send the file buffer
     if (file.file) {
       res.send(file.file);
     } else {
@@ -631,6 +593,46 @@ app.get("/uploads/:name", async (req, res) => {
   } catch (e) {
     console.error("Error serving file:", e);
     return res.status(500).json({ok: false, message: "Internal server error"});
+  }
+});
+
+// ── Slug redirect — MUST come after all specific named routes ──────────────
+//
+// This route matches any single-segment path that looks like a slug.
+// It is intentionally placed AFTER /dashboard, /user, /login, etc. to
+// prevent those routes from being shadowed by the slug handler.
+app.get('/:slug([a-zA-Z0-9_-]{3,50})', async (req, res) => {
+  const { slug } = req.params;
+
+  try {
+    const link = await Link.findOne({ where: { slug, isActive: true } });
+
+    if (!link) return res.status(404).sendFile(path.join(__dirname, 'short/build', 'index.html'));
+
+    // Expired link
+    if (link.isExpired()) {
+      return res.status(410).json({ message: 'This link has expired' });
+    }
+
+    // Password-protected link — redirect to unlock page
+    if (link.isPasswordProtected) {
+      return res.redirect(`/l/${slug}`);
+    }
+
+    // Preview interstitial
+    if (link.hasPreview) {
+      return res.redirect(`/p/${slug}`);
+    }
+
+    // Increment click count (non-blocking)
+    Link.increment('clicks', { where: { id: link.id } }).catch(() => {});
+
+    // Redirect
+    const statusCode = parseInt(link.redirectType) || 302;
+    return res.redirect(statusCode, link.originalUrl);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Redirect failed' });
   }
 });
 
