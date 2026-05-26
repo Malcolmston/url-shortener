@@ -128,7 +128,9 @@ jobs:
         run: npm ci --prefer-offline
 
       - name: Run tests
-        run: npm test --if-present
+        # --passWithNoTests: exit 0 when no spec files exist yet (pre-TDD stage)
+        # --if-present: skip entirely if the test script is not defined
+        run: npm run test --if-present -- --passWithNoTests
 
       - name: Smoke test — server starts
         run: |
