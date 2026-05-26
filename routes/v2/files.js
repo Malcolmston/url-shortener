@@ -91,11 +91,20 @@ router.post('/', requireAuth, upload.array('files'), async (req, res) => {
   }
 });
 
-// v2 re-uses v1 for remaining CRUD operations
+// ── Delegate remaining CRUD to v1 router ─────────────────────────────────
+//
+// v2 re-uses v1 handlers for GET/:id, PUT/:id, DELETE/:id, POST/:id/restore.
+//
+// NOTE: Do NOT use route.stack[0].handle introspection — index 0 is the
+// requireAuth middleware, not the business logic.  Delegating via
+// v1Files.handle() correctly dispatches to the right handler.
+// The v2 requireAuth guard above is still enforced first.
+
 const v1Files = require('../v1/files');
-router.get('/:id',          requireAuth, v1Files.stack?.find(r => r.route?.path === '/:id')?.route?.stack[0]?.handle || ((req, res) => res.status(501).json({ ok: false })));
-router.put('/:id',          ...v1Files.stack?.filter(r => r.route?.path === '/:id' && r.route?.methods?.put)?.map(r => r.route.stack[0].handle) || []);
-router.delete('/:id',       requireAuth, async (req, res, next) => { req.params = req.params; return v1Files.handle(req, res, next); });
-router.post('/:id/restore', requireAuth, async (req, res, next) => v1Files.handle(req, res, next));
+
+router.get('/:id',          requireAuth, (req, res, next) => v1Files.handle(req, res, next));
+router.put('/:id',          requireAuth, (req, res, next) => v1Files.handle(req, res, next));
+router.delete('/:id',       requireAuth, (req, res, next) => v1Files.handle(req, res, next));
+router.post('/:id/restore', requireAuth, (req, res, next) => v1Files.handle(req, res, next));
 
 module.exports = router;
