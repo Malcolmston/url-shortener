@@ -515,6 +515,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 });
 
 // Reset password with token
+//
+// IMPORTANT: Do NOT pre-hash the password before user.update().
+// User.ts has a beforeUpdate hook that re-hashes any changed password
+// field automatically.  Pre-hashing here would store bcrypt(bcrypt(pw)),
+// making the new password unusable at login.
 app.post('/api/auth/reset-password', async (req, res) => {
   try {
     const { token, password } = req.body;
@@ -530,10 +535,8 @@ app.post('/api/auth/reset-password', async (req, res) => {
     if (resetToken.isExpired())     return res.status(400).json({ message: 'Reset token has expired. Please request a new one.' });
     if (resetToken.isUsed())        return res.status(400).json({ message: 'Reset token has already been used.' });
 
-    const saltRounds = parseInt(process.env.SALT || '10');
-    const newHash    = await bcrypt.hash(password, saltRounds);
-
-    await resetToken.user.update({ password: newHash });
+    // Pass raw password — User.ts beforeUpdate hook (hashSync) will hash it.
+    await resetToken.user.update({ password });
     await resetToken.update({ usedAt: new Date() });
 
     res.json({ ok: true, message: 'Password updated successfully. You can now log in.' });
@@ -613,7 +616,7 @@ app.delete('/api/api-keys/:id', userMil, async (req, res) => {
 
 // ── SESSION MANAGEMENT ──
 
-// List active sessions (stub — requires UserSession tracking middleware)
+// List active sessions
 app.get('/api/sessions', userMil, async (req, res) => {
   try {
     const sessions = await UserSession.findAll({
@@ -637,6 +640,8 @@ app.get('/api/sessions', userMil, async (req, res) => {
 });
 
 // Revoke a specific session
+// Deletes from both the UserSession tracking table AND the session store so
+// the target device's cookie is immediately invalidated.
 app.delete('/api/sessions/:id', userMil, async (req, res) => {
   try {
     const session = await UserSession.findOne({
@@ -646,7 +651,18 @@ app.delete('/api/sessions/:id', userMil, async (req, res) => {
     if (session.sessionId === req.sessionID) {
       return res.status(400).json({ message: 'Cannot revoke your current session. Use POST /logout instead.' });
     }
-    await session.destroy();
+
+    const sessionIdToRevoke = session.sessionId;
+    await session.destroy(); // Remove tracking row
+
+    // Also remove from the session store so the cookie becomes invalid immediately.
+    // req.sessionStore is always present when express-session is configured.
+    if (req.sessionStore && sessionIdToRevoke) {
+      req.sessionStore.destroy(sessionIdToRevoke, (err) => {
+        if (err) console.error('Failed to destroy session from store:', err);
+      });
+    }
+
     res.json({ ok: true, message: 'Session revoked' });
   } catch (err) {
     res.status(500).json({ message: 'Failed to revoke session' });
@@ -656,12 +672,36 @@ app.delete('/api/sessions/:id', userMil, async (req, res) => {
 // Revoke all other sessions
 app.post('/api/sessions/revoke-others', userMil, async (req, res) => {
   try {
+    const { Op } = require('sequelize');
+
+    // Collect session IDs to revoke before deleting tracking rows
+    const sessionsToRevoke = await UserSession.findAll({
+      where: {
+        userId:    req.session.userId,
+        sessionId: { [Op.ne]: req.sessionID },
+      },
+      attributes: ['id', 'sessionId'],
+    });
+
+    const sessionIds = sessionsToRevoke.map(s => s.sessionId).filter(Boolean);
+
+    // Delete tracking rows
     await UserSession.destroy({
       where: {
         userId:    req.session.userId,
-        sessionId: { [require('sequelize').Op.ne]: req.sessionID }
-      }
+        sessionId: { [Op.ne]: req.sessionID },
+      },
     });
+
+    // Destroy each session in the store (non-blocking)
+    if (req.sessionStore) {
+      sessionIds.forEach(sid => {
+        req.sessionStore.destroy(sid, (err) => {
+          if (err) console.error(`Failed to destroy session ${sid} from store:`, err);
+        });
+      });
+    }
+
     res.json({ ok: true, message: 'All other sessions have been revoked' });
   } catch (err) {
     res.status(500).json({ message: 'Failed to revoke sessions' });
