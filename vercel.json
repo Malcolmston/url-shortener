@@ -2,21 +2,20 @@
   "version": 2,
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "framework": null,
   "functions": {
     "app.js": {
       "maxDuration": 30,
       "memory": 512
     }
   },
-  "routes": [
-    { "src": "/static/(.*)", "dest": "/app.js" },
-    { "src": "/api/(.*)", "dest": "/app.js" },
-    { "src": "/uploads/(.*)", "dest": "/app.js" },
-    { "src": "/dashboard", "dest": "/app.js" },
-    { "src": "/login", "dest": "/app.js" },
-    { "src": "/signup", "dest": "/app.js" },
-    { "src": "/(.*)", "dest": "/app.js" }
+  "rewrites": [
+    { "source": "/static/:path*",   "destination": "/app.js" },
+    { "source": "/api/:path*",      "destination": "/app.js" },
+    { "source": "/uploads/:path*",  "destination": "/app.js" },
+    { "source": "/dashboard",       "destination": "/app.js" },
+    { "source": "/login",           "destination": "/app.js" },
+    { "source": "/signup",          "destination": "/app.js" },
+    { "source": "/:path*",          "destination": "/app.js" }
   ],
   "env": {
     "NODE_ENV": "production"
