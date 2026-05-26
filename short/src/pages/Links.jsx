@@ -196,13 +196,19 @@ export default function LinksPage() {
     setNewModalOpen(false);
   };
 
+  // Derive expiry status from the authoritative expiresAt field, with
+  // l.isExpired as a server-side hint that may not be populated on all
+  // response shapes.
+  const isExpiredFn = (l) =>
+    !!(l.isExpired || (l.expiresAt && new Date(l.expiresAt) < new Date()));
+
   // Filter
   const filtered = links.filter(l => {
     const matchSearch = !search || l.slug.includes(search) || l.originalUrl.toLowerCase().includes(search.toLowerCase());
     const matchFilter =
       filter === 'all'     ? true :
-      filter === 'active'  ? !l.deletedAt && !l.isExpired :
-      filter === 'expired' ? l.isExpired :
+      filter === 'active'  ? !l.deletedAt && !isExpiredFn(l) :
+      filter === 'expired' ? isExpiredFn(l) :
       filter === 'deleted' ? !!l.deletedAt : true;
     return matchSearch && matchFilter;
   });
@@ -210,7 +216,7 @@ export default function LinksPage() {
   const stats = {
     total:   links.filter(l => !l.deletedAt).length,
     clicks:  links.reduce((s, l) => s + (l.clicks || 0), 0),
-    expired: links.filter(l => l.isExpired && !l.deletedAt).length,
+    expired: links.filter(l => isExpiredFn(l) && !l.deletedAt).length,
     deleted: links.filter(l => l.deletedAt).length,
   };
 

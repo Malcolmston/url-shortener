@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faXmark, faLinkSimple, faLock, faEye, faCalendar,
@@ -27,8 +27,9 @@ export default function NewLinkModal({ isOpen, onClose, onCreated }) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError]             = useState('');
   const [shaking, setShaking]         = useState(false);
-  const slugTimer = useRef(null);
-  const firstInput = useRef(null);
+  const slugTimer   = useRef(null);
+  const slugAbort   = useRef(null);
+  const firstInput  = useRef(null);
 
   // Focus first input when modal opens
   useEffect(() => {
@@ -49,20 +50,35 @@ export default function NewLinkModal({ isOpen, onClose, onCreated }) {
     return () => window.removeEventListener('keydown', h);
   }, [isOpen, onClose]);
 
-  // Debounced slug availability check
+  // Debounced slug availability check with AbortController to prevent
+  // stale responses from an earlier in-flight request overwriting a newer one.
   useEffect(() => {
     if (!slug) { setSlugStatus('idle'); return; }
     if (!/^[a-zA-Z0-9_-]{3,50}$/.test(slug)) { setSlugStatus('invalid'); return; }
+
+    // Cancel any previous pending fetch
+    slugAbort.current?.abort();
     setSlugStatus('checking');
+
     clearTimeout(slugTimer.current);
     slugTimer.current = setTimeout(async () => {
+      const controller = new AbortController();
+      slugAbort.current = controller;
       try {
-        const res = await fetch(`/api/links/slug-check/${encodeURIComponent(slug)}`);
+        const res = await fetch(`/api/links/slug-check/${encodeURIComponent(slug)}`, {
+          signal: controller.signal,
+        });
         const data = await res.json();
         setSlugStatus(data.available ? 'available' : 'taken');
-      } catch { setSlugStatus('idle'); }
+      } catch (err) {
+        if (err.name !== 'AbortError') setSlugStatus('idle');
+      }
     }, 400);
-    return () => clearTimeout(slugTimer.current);
+
+    return () => {
+      clearTimeout(slugTimer.current);
+      slugAbort.current?.abort();
+    };
   }, [slug]);
 
   const handleSubmit = async (e) => {
