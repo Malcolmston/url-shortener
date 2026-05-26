@@ -9,10 +9,6 @@
     --color-brand: 124 58 237;
   }
 
-  * {
-    @apply border-border;
-  }
-
   html {
     @apply font-sans;
     scroll-behavior: smooth;
