@@ -31,11 +31,15 @@ jobs:
       - name: TypeScript check (backend)
         run: npx tsc --noEmit
 
+      # Frontend steps are conditional — skipped on branches that don't include
+      # the React scaffold (e.g. analytics-only or auth-only feature branches).
       - name: Install frontend deps
+        if: hashFiles('short/package.json') != ''
         working-directory: short
         run: npm ci --prefer-offline
 
       - name: ESLint (frontend)
+        if: hashFiles('short/package.json') != ''
         working-directory: short
         run: npx eslint src --ext .js,.jsx --max-warnings 0
 
@@ -58,16 +62,19 @@ jobs:
         run: npm ci --prefer-offline
 
       - name: Install frontend deps
+        if: hashFiles('short/package.json') != ''
         working-directory: short
         run: npm ci --prefer-offline
 
       - name: Build frontend
+        if: hashFiles('short/package.json') != ''
         working-directory: short
         env:
           NODE_ENV: production
         run: npm run build
 
       - name: Upload build artifact
+        if: hashFiles('short/package.json') != ''
         uses: actions/upload-artifact@v4
         with:
           name: frontend-build
