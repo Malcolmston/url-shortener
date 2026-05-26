@@ -1,23 +1,16 @@
 {
-  "version": 2,
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
   "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
   "installCommand": "npm install",
-  "functions": {
-    "app.js": {
-      "maxDuration": 30,
-      "memory": 512
-    }
-  },
-  "rewrites": [
-    { "source": "/static/:path*",   "destination": "/app.js" },
-    { "source": "/api/:path*",      "destination": "/app.js" },
-    { "source": "/uploads/:path*",  "destination": "/app.js" },
-    { "source": "/dashboard",       "destination": "/app.js" },
-    { "source": "/login",           "destination": "/app.js" },
-    { "source": "/signup",          "destination": "/app.js" },
-    { "source": "/:path*",          "destination": "/app.js" }
-  ],
+  "regions": ["iad1"],
   "env": {
-    "NODE_ENV": "production"
+    "DB_HOST":     { "value": "@db-host" },
+    "DB_PORT":     { "value": "@db-port" },
+    "DB_NAME":     { "value": "@db-name" },
+    "DB_USER":     { "value": "@db-user" },
+    "DB_PASSWORD": { "value": "@db-password" },
+    "SESSION":     { "value": "@session-secret" }
   }
 }

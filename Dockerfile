@@ -1,27 +1,50 @@
-FROM ubuntu:latest
-LABEL authors="malcolmstone"
-
-ENTRYPOINT ["top", "-b"]
-
-# Use an official Node.js runtime as the base image
-FROM node:20
-
-# Set working directory inside container
+# ── Base ──────────────────────────────────────────────────────────────────────
+FROM node:20-alpine AS base
 WORKDIR /app
+RUN apk add --no-cache libc6-compat
 
-# Copy package files and install dependencies
-COPY package.json package-lock.json* ./
-RUN npm install -g ts-node typescript
-RUN npm install
+# ── Dependencies ──────────────────────────────────────────────────────────────
+FROM base AS deps
+COPY package*.json ./
+RUN npm ci --prefer-offline
 
-# Copy application files
+# ── Builder ───────────────────────────────────────────────────────────────────
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Expose the port the app runs on (adjust if your app uses a different port)
-EXPOSE 3000
-
-# Set environment variables (optional)
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
-# Start the app
-CMD [ "ts-node", "app.js" ]
+# Dummy env vars so `next build` succeeds without a real DB
+ENV SESSION=build-time-placeholder-32-chars!!!
+ENV DB_HOST=localhost
+ENV DB_PORT=3306
+ENV DB_NAME=snip
+ENV DB_USER=snip
+ENV DB_PASSWORD=placeholder
+
+RUN npm run build
+
+# ── Runner ────────────────────────────────────────────────────────────────────
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser  --system --uid 1001 nextjs
+
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+CMD ["node", "server.js"]
