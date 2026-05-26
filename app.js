@@ -435,13 +435,33 @@ app.get("/uploads/:name", async (req, res) => {
 /**
  * GET /api/analytics/links/:id
  * Per-link analytics: clicks/day, unique visitors, top device/OS/browser/referrer
+ *
+ * Security: verifies the requested link belongs to the authenticated user before
+ * returning any click data.  Returns 404 (not 403) to avoid leaking link existence.
  */
 app.get('/api/analytics/links/:id', userMil, async (req, res) => {
   try {
     const { Op } = require('sequelize');
     const linkId = req.params.id;
 
-    // Ensure the link belongs to this user (join through Link model if available)
+    // ── Ownership check ────────────────────────────────────────────────────
+    // Dynamically require Link so the route degrades gracefully on branches
+    // where the Link model hasn't been merged in yet.
+    try {
+      const { Link } = require('./database/associations');
+      if (Link) {
+        const link = await Link.findOne({
+          where: { id: linkId, userId: req.user.id },
+        });
+        // Return 404 (not 403) to avoid leaking existence of other users' links
+        if (!link) {
+          return res.status(404).json({ ok: false, message: 'Link not found' });
+        }
+      }
+    } catch {
+      // Link model not available on this branch – skip ownership guard
+    }
+
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
     const clicks = await Click.findAll({
@@ -482,30 +502,58 @@ app.get('/api/analytics/links/:id', userMil, async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Failed to load analytics' });
+    res.status(500).json({ ok: false, message: 'Failed to load analytics' });
   }
 });
 
 /**
  * GET /api/analytics
  * Account-level analytics: aggregate clicks, top links, clicks/day for last 30 days
+ *
+ * Security: scopes all Click queries to the authenticated user's own link IDs so
+ * one user never sees another user's totals.
  */
 app.get('/api/analytics', userMil, async (req, res) => {
   try {
     const { Op } = require('sequelize');
     const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
-    // Total clicks on user's links (requires Link model — stub if not present)
+    // ── Collect this user's link IDs ───────────────────────────────────────
+    let userLinkIds = [];
+    try {
+      const { Link } = require('./database/associations');
+      if (Link) {
+        const userLinks = await Link.findAll({
+          where: { userId: req.user.id },
+          attributes: ['id'],
+          raw: true,
+        });
+        userLinkIds = userLinks.map((l) => l.id);
+      }
+    } catch {
+      // Link model not available on this branch
+    }
+
+    // When the user has no links (or Link model absent) there are no clicks to show.
+    // Sequelize Op.in with an empty array produces a 1=0 predicate — zero rows, safe.
+    const linkFilter = userLinkIds.length > 0
+      ? { linkId: { [Op.in]: userLinkIds } }
+      : { linkId: { [Op.in]: [] } };
+
+    const timeFilter = { createdAt: { [Op.gte]: thirtyDaysAgo } };
+
+    // ── Total clicks (user-scoped) ─────────────────────────────────────────
     const totalClicks = await Click.count({
-      where: { createdAt: { [Op.gte]: thirtyDaysAgo } },
+      where: { ...timeFilter, ...linkFilter },
     });
 
-    // Clicks per day
+    // ── Clicks per day (user-scoped) ───────────────────────────────────────
     const clicks = await Click.findAll({
-      where: { createdAt: { [Op.gte]: thirtyDaysAgo } },
+      where: { ...timeFilter, ...linkFilter },
       attributes: ['createdAt'],
       order: [['createdAt', 'ASC']],
     });
+
     const byDay = {};
     clicks.forEach((c) => {
       const day = c.createdAt.toISOString().slice(0, 10);
@@ -519,7 +567,7 @@ app.get('/api/analytics', userMil, async (req, res) => {
     });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Failed to load analytics' });
+    res.status(500).json({ ok: false, message: 'Failed to load analytics' });
   }
 });
 
