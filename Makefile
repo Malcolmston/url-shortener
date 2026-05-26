@@ -1,8 +1,8 @@
-.PHONY: dev build install migrate seed test clean
+.PHONY: dev build start install lint typecheck test clean docker-build docker-up docker-down
 
+## Development
 install:
 	npm install
-	cd short && npm install
 
 dev:
 	npm run dev
@@ -10,20 +10,32 @@ dev:
 build:
 	npm run build
 
-migrate:
-	npm run migrate
+start:
+	npm run start
 
-seed:
-	npm run seed
+## Quality
+lint:
+	npm run lint
+
+typecheck:
+	npm run typecheck
 
 test:
 	npm test
 
-clean:
-	rm -rf node_modules short/node_modules short/build dist
+## Docker
+docker-build:
+	docker build -t snip-app:latest .
 
 docker-up:
-	docker-compose up -d
+	docker compose up -d
 
 docker-down:
-	docker-compose down
+	docker compose down
+
+docker-logs:
+	docker compose logs -f
+
+## Cleanup
+clean:
+	rm -rf .next node_modules
