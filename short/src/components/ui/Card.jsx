@@ -1,4 +1,5 @@
 import React from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 
 export function Card({ children, className = '', padding = 'default', hover = false, ...props }) {
   const paddings = {
@@ -60,9 +61,13 @@ export function StatCard({ label, value, icon, color = 'violet', delta, classNam
   return (
     <Card className={['flex items-center gap-4 p-5', className].join(' ')}>
       <div className={['w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0', bg].join(' ')}>
-        {icon && React.createElement(require('@fortawesome/react-fontawesome').FontAwesomeIcon, {
-          icon, className: ['text-lg', iconColor].join(' '), 'aria-hidden': true
-        })}
+        {icon && (
+          <FontAwesomeIcon
+            icon={icon}
+            className={['text-lg', iconColor].join(' ')}
+            aria-hidden="true"
+          />
+        )}
       </div>
       <div className="min-w-0">
         <p className="text-2xl font-bold text-gray-900 dark:text-slate-50 font-display leading-none">{value}</p>
