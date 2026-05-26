@@ -29,12 +29,16 @@ export default function Button({
   fullWidth = false,
   className = '',
   disabled,
+  // Default to 'button' to prevent accidental form submissions when this
+  // component is used inside a <form> without an explicit type override.
+  type = 'button',
   ...props
 }) {
   const isDisabled = disabled || isLoading;
 
   return (
     <button
+      type={type}
       disabled={isDisabled}
       className={[
         'inline-flex items-center justify-center font-medium transition-colors duration-150',
@@ -60,10 +64,11 @@ export default function Button({
 }
 
 // Icon-only button variant
-export function IconButton({ icon, label, variant = 'ghost', size = 'md', className = '', ...props }) {
+export function IconButton({ icon, label, variant = 'ghost', size = 'md', className = '', type = 'button', ...props }) {
   const iconSizes = { xs: 'h-7 w-7', sm: 'h-8 w-8', md: 'h-9 w-9', lg: 'h-10 w-10', xl: 'h-11 w-11' };
   return (
     <button
+      type={type}
       aria-label={label}
       className={[
         'inline-flex items-center justify-center rounded-lg transition-colors duration-150',
