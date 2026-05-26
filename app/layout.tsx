@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import './globals.css';
+import { ToastProvider } from '@/components/ui/Toast';
 
 export const metadata: Metadata = {
   title: { default: 'Snip — Short links. Big control.', template: '%s | Snip' },
@@ -32,7 +33,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         className="min-h-screen antialiased"
         style={{ backgroundColor: 'var(--bg-page)', color: 'var(--text-primary)' }}
       >
-        {children}
+        <ToastProvider>
+          {children}
+        </ToastProvider>
       </body>
     </html>
   );
