@@ -1,451 +1,271 @@
-const express = require("express");
-const multer = require("multer");
-const morgan = require("morgan")
-const session = require("express-session");
-const path = require("path");
-const mime = require('mime-types');
-require("dotenv").config();
+require('dotenv').config();
+const express  = require("express");
+const multer   = require("multer");
+const morgan   = require("morgan");
+const session  = require("express-session");
+const passport = require("passport");
+const path     = require("path");
+const mime     = require("mime-types");
 
 require('ts-node').register({
   project: path.join(__dirname, "tsconfig.json")
 });
 
-const {sequelize, User, File} = require("./database/associations");
+const { sequelize, User, File } = require("./database/associations");
+const configurePassport = require('./utils/passport');
+const { serveFile }     = require('./routes/v1/files');
+const v1Router          = require('./routes/v1');
+const v2Router          = require('./routes/v2');
 
-const PORT = process.env.PORT || 3000;
+// ── Validate critical env vars ─────────────────────────────────────────────
+if (!process.env.SESSION) {
+  const msg = 'FATAL: SESSION environment variable is not set';
+  if (process.env.NODE_ENV === 'production') { console.error(msg); process.exit(1); }
+  else console.warn(msg);
+}
 
-const app = express();
-const upload = multer();
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
-// Database sync
+// ── Sequelize sync ─────────────────────────────────────────────────────────
 (async () => {
   await sequelize.sync({ force: false });
 })();
 
+// ── App setup ──────────────────────────────────────────────────────────────
+const app    = express();
+const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } });
+
+// ── Logging (Morgan) ───────────────────────────────────────────────────────
+// Concise in dev, combined (Apache-style) in prod
+if (process.env.NODE_ENV === 'production') {
+  app.use(morgan('combined'));
+} else {
+  app.use(morgan('dev'));
+}
+
+// ── Body parsers ───────────────────────────────────────────────────────────
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(morgan("dev"))
+
+// ── Session ────────────────────────────────────────────────────────────────
 app.use(session({
-  secret: process.env.SESSION,
+  secret: process.env.SESSION || 'dev-secret-change-me',
   resave: false,
   saveUninitialized: false,
-  cookie: {secure: false, httpOnly: true, sameSite: "strict"},
-}))
+  cookie: {
+    secure:   process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge:   7 * 24 * 60 * 60 * 1000, // 7 days
+  },
+}));
 
-const userMil = async (req, res, next) => {
-  const sessionUser = req.session.user;
-  if (!sessionUser) {
-    return res.status(401).json({ ok: false, message: "Not authenticated", location: "/" });
-  }
+// ── Passport ───────────────────────────────────────────────────────────────
+configurePassport(passport, User);
+app.use(passport.initialize());
+app.use(passport.session());
 
+// ── Health endpoints ───────────────────────────────────────────────────────
+app.get('/health/live',    (req, res) => res.json({ status: 'ok' }));
+app.get('/health/ready',   async (req, res) => {
   try {
-    const user = await User.findOne({
-      where: {
-        username: sessionUser.username
-      }
-    });
-
-    if (!user) {
-      return res.status(403).json({ ok: false, message: "User not found or deleted", location: "/" });
-    }
-
-    req.user = user;
-    next();
-  } catch (error) {
-    return res.status(500).json({ ok: false, message: "Server error", location: "/" });
-  }
-};
-
-app.get("/dashboard",async (req, res, next) => {
-  const sessionUser = req.session.user;
-  if (!sessionUser) {
-    return res.status(401).redirect("/")
-  }
-
-  try {
-    const user = await User.findOne({
-      where: {
-        username: sessionUser.username
-      }
-    });
-
-    if (!user) {
-      return res.status(403).redirect("/")
-    }
-
-    if (!user) return res.redirect("/");
-
-    next();
-  } catch (error) {
-    console.error(error);
-    return res.status(500).redirect("/")
-  }
-})
-
-app.get("/user", userMil, async (req, res) => {
-  try {
-
-    let user = await User.findOne({
-      where: {
-        username: req.user.username
-      },
-      attributes: {
-        exclude: ["password"]
-      }
-    })
-
-    let data = {
-      ...user.toJSON(),
-      files: await user.getFiles({
-        raw: true,
-      })
-    }
-
-    return res.status(201).json(data);
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok: false, message: e.message, location: "/" });
-  }
-})
-
-app.post("/signup", async (req, res) => {
-  const {firstname, lastname, username, password} = req.body;
-
-  try {
-    let user = await User.findOne({where: {username: username}});
-
-    if( user) {
-      return res.status(402).json({
-        ok: false,
-        message: "User already exists",
-        location: "/"
-      })
-    } else if( user.isSoftDeleted() ) {
-      return res.status(403).json({
-        ok: false,
-        message: "User is deleted",
-        location: "/"
-      })
-    }
-
-    let c = await User.create({
-      firstname,
-      lastname,
-      username,
-      password,
-    })
-
-    if( c ) {
-      req.session.user = c;
-      return res.status(200).json({
-        ok: true,
-        location: "/dashboard",
-      })
-    }
-  } catch (e) {
-    return res.status(500).json({
-      ok: false,
-      message: e.message,
-      location: "/"
-    })
+    await sequelize.authenticate();
+    res.json({ status: 'ok', db: 'connected' });
+  } catch {
+    res.status(503).json({ status: 'error', db: 'unreachable' });
   }
 });
-
-app.post("/login", async (req, res) => {
-  const {username, password} = req.body;
-
-  try {
-    let user = await User.findOne({
-      where: {username: username}
-    });
-
-    if (!user) {
-      return res.status(401).json({
-        ok: false,
-        message: "User not found",
-        location: "/"
-      });
-    }
-
-    if (user.isSoftDeleted()) {
-      return res.status(403).json({
-        ok: false,
-        message: "User is deleted",
-        location: "/"
-      })
-    }
-
-    if (!user.isValidPassword(password)) {
-      return res.status(401).json({
-        ok: false,
-        message: "Incorrect username or password",
-        location: "/"
-      });
-    }
-
-    req.session.user = user;
-
-    return res.status(200).json({
-      ok: true,
-      location: "/dashboard",
-    })
-  } catch (e) {
-    console.error('Login error:', e);
-    return res.status(500).json({
-      ok: false,
-      message: e.message,
-      location: "/"
-    });
-  }
+app.get('/health/version', (req, res) => {
+  const pkg = require('./package.json');
+  res.json({ name: pkg.name, version: pkg.version, node: process.version });
 });
 
-app.post("/upload",userMil, upload.array("files"), async (req, res) => {
-  const {user} = req;
-  if (!user || user.deletedAt) {
-    return res.status(403).json({ ok: false, message: "User does not exist or is deleted" });
+// ── Versioned API routes ───────────────────────────────────────────────────
+app.use('/api/v1', v1Router);
+app.use('/api/v2', v2Router);
+
+// ── Legacy compatibility routes (kept for old frontend code) ───────────────
+
+/**
+ * GET /user — delegates to GET /api/v1/user
+ * Kept so existing account.jsx still works without a frontend change.
+ */
+app.get('/user', (req, res, next) => {
+  req.url = '/';
+  v1Router.handle(Object.assign(req, { url: '/user/' }), res, next);
+});
+
+/**
+ * POST /login — delegates to /api/v1/auth/login (Passport)
+ */
+app.post('/login', (req, res, next) => {
+  passport.authenticate('local', (err, user, info) => {
+    if (err) return next(err);
+    if (!user) return res.status(401).json({ ok: false, message: info?.message || 'Invalid credentials', location: '/' });
+    req.logIn(user, (loginErr) => {
+      if (loginErr) return next(loginErr);
+      res.json({ ok: true, location: '/dashboard' });
+    });
+  })(req, res, next);
+});
+
+/**
+ * POST /signup — delegates to /api/v1/auth/signup
+ */
+app.post('/signup', async (req, res, next) => {
+  const { firstname, lastname, username, password } = req.body;
+  if (!username || !password || !firstname || !lastname) {
+    return res.status(400).json({ ok: false, message: 'All fields are required' });
   }
-
   try {
-    const savedFiles = [];
-
-    for (const file of req.files) {
-      const newFile = await File.create({
-        name: file.originalname,
-        file: file.buffer,
-        type: file.mimetype,
-        visibility: true,
-        userId: user.id,
-      });
-      savedFiles.push(newFile);
+    const existing = await User.findOne({ where: { username }, paranoid: false });
+    if (existing && existing.isSoftDeleted && existing.isSoftDeleted()) {
+      return res.status(409).json({ ok: false, message: 'That username is no longer available', location: '/' });
     }
-
-    await user.addFiles(savedFiles);
-
-    return res.status(200).json({
-      ok: true,
-      message: "Files uploaded successfully",
-      files: savedFiles.map(f => ({
-        id: f.id,
-        name: f.name,
-        uuid: f.uuid,
-        visibility: f.visibility,
-      })),
+    if (existing) {
+      return res.status(409).json({ ok: false, message: 'Username is already taken', location: '/' });
+    }
+    const bcrypt = require('bcrypt');
+    const hash = await bcrypt.hash(password, parseInt(process.env.SALT || '10'));
+    const user = await User.create({ firstname, lastname, username, password: hash });
+    req.logIn(user, (err) => {
+      if (err) return next(err);
+      res.status(201).json({ ok: true, location: '/dashboard' });
     });
   } catch (err) {
-    console.error("Upload error:", err);
-    return res.status(500).json({ ok: false, message: "Failed to upload files" });
+    next(err);
   }
 });
 
-app.get("/files",userMil, async (req, res) => {
-  const {user} = req;
-
-  if (!user || user.deletedAt) {
-    return res.status(403).json({ ok: false, message: "User does not exist or is deleted" });
-  }
-
-  let files = await user.getFiles({
-    attributes: ["id","name", "file", "visibility", "createdAt", "deletedAt"],
-    paranoid: false,
-    raw: true,
+/**
+ * POST /logout — destroy Passport session
+ */
+app.post('/logout', (req, res, next) => {
+  req.logout((err) => {
+    if (err) return next(err);
+    req.session.destroy(() => {
+      res.clearCookie('connect.sid');
+      res.json({ ok: true, message: 'Logged out' });
+    });
   });
+});
 
-  return res.status(200).json({
-    ok: true,
-    files
-  })
-})
+/**
+ * GET /files — legacy; delegates to /api/v1/files
+ */
+app.get('/files', (req, res, next) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, message: 'Not authenticated' });
+  req.url = '/';
+  v1Router.handle(Object.assign(req, { url: '/files/' }), res, next);
+});
 
-app.post("/action/:type/:id", userMil, async (req, res) => {
-  const {type, id} = req.params;
-  const {visibility = null, name = null} = req.body;
-  const {user} = req;
-
+/**
+ * POST /upload — legacy multipart upload
+ */
+app.post('/upload', upload.array('files'), async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, message: 'Not authenticated' });
+  if (!req.files || req.files.length === 0) return res.status(400).json({ ok: false, message: 'No files uploaded' });
   try {
-    let files = await user.getFiles({
-      where: {id},
-      paranoid: false,
-      limit: 1
-    });
-
-    // Fix: getFiles returns an array, so check if array is empty or get first item
-    if (!files || files.length === 0) {
-      return res.status(403).json({ ok: false, message: "file does not exist or is deleted" });
+    const saved = [];
+    for (const f of req.files) {
+      const record = await File.create({
+        name: f.originalname, file: f.buffer, type: f.mimetype,
+        visibility: true, userId: req.user.id,
+      });
+      saved.push({ id: record.id, name: record.name, uuid: record.uuid, visibility: record.visibility });
     }
+    res.status(200).json({ ok: true, message: 'Files uploaded', files: saved });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err.message });
+  }
+});
 
-    let file = files[0]; // Get the first (and only) file from the array
-
+/**
+ * POST /action/:type/:id — legacy file action
+ */
+app.post('/action/:type/:id', async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, message: 'Not authenticated' });
+  const { type, id } = req.params;
+  const { visibility = null, name = null } = req.body;
+  try {
+    const files = await req.user.getFiles({ where: { id }, paranoid: false, limit: 1 });
+    if (!files || !files.length) return res.status(404).json({ ok: false, message: 'File not found' });
+    const file = files[0];
     switch (type) {
-      case "visibility":
-        if (visibility === null || !(visibility === "1" || visibility === "0")) {
-          return res.status(403).json({ok: false, message: "Invalid param visibility"});
-        }
-
-        await file.update({ visibility: visibility === "1" });
-        return res.status(200).json({ok: true, message: "File visibility updated successfully"});
-
-      case "name":
-        if (name === null) {
-          return res.status(403).json({ok: false, message: "Invalid name"});
-        }
-
-        await file.update({ name: name });
-        return res.status(200).json({ok: true, message: "File updated successfully"});
-
-      case "delete":
-        if (file.isSoftDeleted()) {
-          return res.status(403).json({ok: false, message: "File was deleted"});
-        }
-
+      case 'visibility':
+        if (visibility === null) return res.status(400).json({ ok: false, message: 'visibility required' });
+        await file.update({ visibility: visibility === '1' });
+        return res.json({ ok: true, message: 'Visibility updated' });
+      case 'name':
+        if (!name) return res.status(400).json({ ok: false, message: 'name required' });
+        await file.update({ name });
+        return res.json({ ok: true, message: 'File renamed' });
+      case 'delete':
         await file.destroy();
-        return res.status(200).json({ok: true, message: "File was deleted"});
-
-      case "recover":
-        if (!file.isSoftDeleted()) {
-          return res.status(403).json({ok: false, message: "File was not deleted"});
-        }
-
+        return res.json({ ok: true, message: 'File deleted' });
+      case 'recover':
         await file.restore();
-        return res.status(200).json({ok: true, message: "File was restored"});
-
+        return res.json({ ok: true, message: 'File restored' });
       default:
-        return res.status(500).json({ok: false, message: "invalid parameter"});
+        return res.status(400).json({ ok: false, message: 'Unknown action' });
     }
-
-  } catch (e) {
-    return res.status(500).json({
-      ok: false,
-      message: e.message,
-    });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err.message });
   }
 });
 
-app.put("/change", userMil, async (req, res) => {
-  const {user} = req;
-  let {username = null, firstname = null, lastname = null} = req.body;
-
+/**
+ * PUT /change — legacy profile update
+ */
+app.put('/change', async (req, res) => {
+  if (!req.isAuthenticated()) return res.status(401).json({ ok: false, message: 'Not authenticated' });
+  const { username, firstname, lastname } = req.body;
   try {
-    if( username === null) username = user.username;
-    if( firstname === null ) firstname = user.firstname;
-    if( lastname === null ) lastname = user.lastname;
-
-    const updatedUser = await User.findOne({
-      where: { id: user.id },
-      attributes: { exclude: ["password"] }
-    });
-
-    const userData = {
-      ...updatedUser.toJSON(),
-      files: await updatedUser.getFiles({ raw: true })
-    };
-
-    return res.status(200).json({
-      ok: true,
-      message: "User changed successfully",
-      user: userData  // Return updated user data
-    });
-  } catch (e) {
-    return res.status(500).json({ok: false, message: e.message})
-  }
-})
-
-app.get("/uploads/:name", async (req, res) => {
-  const {name} = req.params;
-
-  console.log(name);
-
-  try {
-    let user = await User.findOne({
-      where: {
-        username: req.session.user.username
-      }
-    });
-
-    if (!user) {
-      return res.status(404).json({ok: false, message: "User not found"});
-    }
-
-    let files = await user.getFiles({
-      where: {
-        name: name
-      },
-      paranoid: false,
-      limit: 1
-    });
-
-    if (!files || files.length === 0) {
-      return res.status(404).json({ok: false, message: "File not found"});
-    }
-
-    let file = files[0];
-
-    // Check if file is deleted
-    if (file.deletedAt) {
-      return res.status(410).json({ok: false, message: "File has been deleted"});
-    }
-
-    // Check visibility and authentication
-    if (!file.visibility) {
-      // Private file - check if user is authenticated and owns the file
-      const authHeader = req.headers.authorization;
-      if (!authHeader) {
-        return res.status(401).json({ok: false, message: "Authentication required for private files"});
-      }
-
-      // Add your authentication logic here
-      // For example, if using JWT:
-      try {
-        const token = authHeader.split(' ')[1]; // Assuming "Bearer <token>"
-        const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-        if (decoded.username !== username) {
-          return res.status(403).json({ok: false, message: "Access denied"});
-        }
-      } catch (authError) {
-        return res.status(401).json({ok: false, message: "Invalid authentication"});
-      }
-    }
-
-    // Set appropriate headers
-    res.set({
-      'Content-Type': mime.lookup(file.name) || 'application/octet-stream',
-      'Content-Length': file.file ? file.file.length : 0,
-      'Cache-Control': file.visibility ? 'public, max-age=31536000' : 'private, no-cache',
-      'Content-Disposition': `inline; filename="${file.name}"`
-    });
-
-    // Send the file buffer
-    if (file.file) {
-      res.send(file.file);
-    } else {
-      res.status(404).json({ok: false, message: "File data not found"});
-    }
-
-  } catch (e) {
-    console.error("Error serving file:", e);
-    return res.status(500).json({ok: false, message: "Internal server error"});
+    const updates = {};
+    if (username !== undefined)  updates.username  = username;
+    if (firstname !== undefined) updates.firstname = firstname;
+    if (lastname !== undefined)  updates.lastname  = lastname;
+    await req.user.update(updates);
+    const refreshed = await User.findOne({ where: { id: req.user.id }, attributes: { exclude: ['password'] } });
+    const files = await refreshed.getFiles({ raw: true });
+    res.json({ ok: true, message: 'User updated', user: { ...refreshed.toJSON(), files } });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err.message });
   }
 });
 
-// Serve static files from the React app
+/**
+ * GET /uploads/:name — serve file buffer (public or authenticated private)
+ */
+app.get('/uploads/:name', serveFile);
+
+/**
+ * GET /dashboard — SPA entry (auth guard on frontend)
+ */
+app.get('/dashboard', (req, res, next) => next());
+
+// ── Static files (React build) ─────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, './short/build')));
 
+// ── SPA catch-all ──────────────────────────────────────────────────────────
 app.use((req, res) => {
-  console.log('Catch-all middleware hit, serving:', path.join(__dirname, './short/build', 'index.html'));
   res.sendFile(path.join(__dirname, './short/build', 'index.html'));
 });
 
-
-// Global error handler must come after all routes and middleware
+// ── Global error handler ───────────────────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({
-    success: false,
-    message: 'Something went wrong!'
+  res.status(err.status || 500).json({
+    ok: false,
+    message: process.env.NODE_ENV === 'production' ? 'Something went wrong' : err.message,
   });
 });
 
+// ── Server start (skip in serverless/Vercel) ───────────────────────────────
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Snip running on http://localhost:${PORT} [${process.env.NODE_ENV || 'development'}]`);
+  });
+}
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-});
+module.exports = app;
