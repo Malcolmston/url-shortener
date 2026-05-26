@@ -110,7 +110,12 @@ app.post('/login', (req, res, next) => {
 });
 
 /**
- * POST /signup — delegates to /api/v1/auth/signup
+ * POST /signup — legacy signup; delegates through Passport session.
+ *
+ * IMPORTANT: Do NOT pre-hash the password before User.create().
+ * User.ts has a beforeCreate hook (bcrypt.hashSync) that hashes the raw
+ * password automatically.  Pre-hashing stores a bcrypt-of-bcrypt hash,
+ * causing isValidPassword() to always fail for newly registered users.
  */
 app.post('/signup', async (req, res, next) => {
   const { firstname, lastname, username, password } = req.body;
@@ -125,9 +130,8 @@ app.post('/signup', async (req, res, next) => {
     if (existing) {
       return res.status(409).json({ ok: false, message: 'Username is already taken', location: '/' });
     }
-    const bcrypt = require('bcrypt');
-    const hash = await bcrypt.hash(password, parseInt(process.env.SALT || '10'));
-    const user = await User.create({ firstname, lastname, username, password: hash });
+    // Pass raw password — User.ts beforeCreate hook (hashSync) will hash it.
+    const user = await User.create({ firstname, lastname, username, password });
     req.logIn(user, (err) => {
       if (err) return next(err);
       res.status(201).json({ ok: true, location: '/dashboard' });
