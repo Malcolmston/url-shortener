@@ -2,6 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const morgan = require("morgan")
 const session = require("express-session");
+const passport = require("passport");
 const path = require("path");
 const mime = require('mime-types');
 const helmet = require("helmet");
@@ -22,12 +23,11 @@ require('ts-node').register({
   project: path.join(__dirname, "tsconfig.json")
 });
 
-const {sequelize, User, File, Link} = require("./database/associations");
+const {sequelize, User, File, Link, PasswordResetToken, ApiKey, UserSession} = require("./database/associations");
 const { generateSlug, validateSlug, validateUrl } = require('./utils/slugify');
-const bcrypt = require('bcrypt');
-const {sequelize, User, File, PasswordResetToken, ApiKey, UserSession} = require("./database/associations");
 const { v4: uuidv4 } = require('uuid');
 const { generateApiKey, hashApiKey } = require('./utils/apiKey');
+const configurePassport = require('./utils/passport');
 
 const PORT = process.env.PORT || 3000;
 
@@ -86,6 +86,11 @@ app.use(session({
   saveUninitialized: false,
   cookie: {secure: false, httpOnly: true, sameSite: "strict"},
 }))
+
+// Passport.js authentication
+configurePassport(passport, User);
+app.use(passport.initialize());
+app.use(passport.session());
 
 // Track session activity
 app.use(async (req, res, next) => {
