@@ -89,3 +89,10 @@ typings/
 
 # Claude Code agent worktrees
 .claude/
+
+# Next.js
+.next/
+out/
+.env.local
+.env.*.local
+next-env.d.ts
