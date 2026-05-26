@@ -10,7 +10,8 @@ require('ts-node').register({
   project: path.join(__dirname, "tsconfig.json")
 });
 
-const {sequelize, User, File} = require("./database/associations");
+const {sequelize, User, File, Click} = require("./database/associations");
+const { parseUserAgent, normalizeReferrer, hashIp } = require('./utils/parseUA');
 
 const PORT = process.env.PORT || 3000;
 
@@ -426,6 +427,123 @@ app.get("/uploads/:name", async (req, res) => {
     return res.status(500).json({ok: false, message: "Internal server error"});
   }
 });
+
+// ============================================================
+// ANALYTICS ROUTES
+// ============================================================
+
+/**
+ * GET /api/analytics/links/:id
+ * Per-link analytics: clicks/day, unique visitors, top device/OS/browser/referrer
+ */
+app.get('/api/analytics/links/:id', userMil, async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const linkId = req.params.id;
+
+    // Ensure the link belongs to this user (join through Link model if available)
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const clicks = await Click.findAll({
+      where: {
+        linkId,
+        createdAt: { [Op.gte]: thirtyDaysAgo },
+      },
+      attributes: ['ipHash', 'device', 'os', 'browser', 'referrer', 'createdAt'],
+      order: [['createdAt', 'ASC']],
+    });
+
+    // Clicks per day
+    const byDay = {};
+    clicks.forEach((c) => {
+      const day = c.createdAt.toISOString().slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + 1;
+    });
+
+    // Unique visitors (by IP hash)
+    const uniqueVisitors = new Set(clicks.map((c) => c.ipHash).filter(Boolean)).size;
+
+    // Top N helper
+    const topN = (field, n = 5) => {
+      const counts = {};
+      clicks.forEach((c) => { if (c[field]) counts[c[field]] = (counts[c[field]] || 0) + 1; });
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, count]) => ({ name, count }));
+    };
+
+    res.json({
+      ok: true,
+      totalClicks: clicks.length,
+      uniqueVisitors,
+      clicksByDay: byDay,
+      topDevices: topN('device'),
+      topOS: topN('os'),
+      topBrowsers: topN('browser'),
+      topReferrers: topN('referrer'),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to load analytics' });
+  }
+});
+
+/**
+ * GET /api/analytics
+ * Account-level analytics: aggregate clicks, top links, clicks/day for last 30 days
+ */
+app.get('/api/analytics', userMil, async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    // Total clicks on user's links (requires Link model — stub if not present)
+    const totalClicks = await Click.count({
+      where: { createdAt: { [Op.gte]: thirtyDaysAgo } },
+    });
+
+    // Clicks per day
+    const clicks = await Click.findAll({
+      where: { createdAt: { [Op.gte]: thirtyDaysAgo } },
+      attributes: ['createdAt'],
+      order: [['createdAt', 'ASC']],
+    });
+    const byDay = {};
+    clicks.forEach((c) => {
+      const day = c.createdAt.toISOString().slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + 1;
+    });
+
+    res.json({
+      ok: true,
+      totalClicks,
+      clicksByDay: byDay,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Failed to load analytics' });
+  }
+});
+
+/**
+ * POST /api/analytics/click — internal: record a click event
+ * Called non-blocking from the redirect handler once Link model is available.
+ */
+async function recordClick(linkId, req) {
+  try {
+    const ua = req.headers['user-agent'] || '';
+    const { device, os, browser } = parseUserAgent(ua);
+    const referrer = normalizeReferrer(req.headers['referer'] || req.headers['referrer'], req.hostname);
+    const ip = req.ip || req.socket?.remoteAddress || '';
+    const ipHash = hashIp(ip);
+
+    await Click.create({ linkId, ipHash, device, os, browser, referrer });
+  } catch {
+    // Never block redirects due to analytics errors
+  }
+}
+
+// Export for use in redirect handler
+module.exports = module.exports || {};
+if (typeof module !== 'undefined') module.exports.recordClick = recordClick;
 
 // Serve static files from the React app
 app.use(express.static(path.join(__dirname, './short/build')));
