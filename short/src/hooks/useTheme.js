@@ -1,33 +1,33 @@
 import { useState, useEffect, useCallback } from 'react';
 
 export function useTheme() {
-  const [theme, setTheme] = useState(() => {
-    const stored = localStorage.getItem('snip-theme');
-    if (stored) return stored;
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  const [theme, setThemeState] = useState(() => {
+    try {
+      const stored = localStorage.getItem('snip-theme');
+      if (stored) return stored;
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch { return 'light'; }
   });
 
-  const applyTheme = useCallback((t) => {
-    const resolved = t === 'system'
+  useEffect(() => {
+    const resolved = theme === 'system'
       ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
-      : t;
+      : theme;
     document.documentElement.setAttribute('data-theme', resolved);
     if (resolved === 'dark') document.documentElement.classList.add('dark');
     else document.documentElement.classList.remove('dark');
-  }, []);
-
-  useEffect(() => { applyTheme(theme); }, [theme, applyTheme]);
+  }, [theme]);
 
   const toggle = useCallback(() => {
     const next = theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('snip-theme', next);
-    setTheme(next);
+    setThemeState(next);
   }, [theme]);
 
-  const setSpecific = useCallback((t) => {
+  const setTheme = useCallback((t) => {
     localStorage.setItem('snip-theme', t);
-    setTheme(t);
+    setThemeState(t);
   }, []);
 
-  return { theme, toggle, setTheme: setSpecific };
+  return { theme, toggle, setTheme };
 }
