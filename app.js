@@ -23,11 +23,12 @@ require('ts-node').register({
   project: path.join(__dirname, "tsconfig.json")
 });
 
-const {sequelize, User, File, Link, PasswordResetToken, ApiKey, UserSession} = require("./database/associations");
+const {sequelize, User, File, Link, PasswordResetToken, ApiKey, UserSession, Click} = require("./database/associations");
 const { generateSlug, validateSlug, validateUrl } = require('./utils/slugify');
 const { v4: uuidv4 } = require('uuid');
 const { generateApiKey, hashApiKey } = require('./utils/apiKey');
 const configurePassport = require('./utils/passport');
+const { parseUserAgent, normalizeReferrer, hashIp } = require('./utils/parseUA');
 
 const PORT = process.env.PORT || 3000;
 
@@ -595,6 +596,111 @@ app.get('/health/version', (req, res) => {
   res.json({ version: process.env.npm_package_version || '1.0.0', node: process.version, env: process.env.NODE_ENV || 'development' });
 });
 
+
+// ============================================================
+// ANALYTICS ROUTES
+// ============================================================
+
+/**
+ * GET /api/analytics/links/:id
+ * Per-link analytics: clicks/day, unique visitors, top device/OS/browser/referrer
+ */
+app.get('/api/analytics/links/:id', userMil, async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const linkId = req.params.id;
+
+    const link = await Link.findOne({ where: { id: linkId, userId: req.user.id } });
+    if (!link) return res.status(404).json({ ok: false, message: 'Link not found' });
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const clicks = await Click.findAll({
+      where: { linkId, createdAt: { [Op.gte]: thirtyDaysAgo } },
+      attributes: ['ipHash', 'device', 'os', 'browser', 'referrer', 'createdAt'],
+      order: [['createdAt', 'ASC']],
+    });
+
+    const byDay = {};
+    clicks.forEach((c) => {
+      const day = c.createdAt.toISOString().slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + 1;
+    });
+
+    const uniqueVisitors = new Set(clicks.map((c) => c.ipHash).filter(Boolean)).size;
+
+    const topN = (field, n = 5) => {
+      const counts = {};
+      clicks.forEach((c) => { if (c[field]) counts[c[field]] = (counts[c[field]] || 0) + 1; });
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, count]) => ({ name, count }));
+    };
+
+    res.json({
+      ok: true,
+      totalClicks: clicks.length,
+      uniqueVisitors,
+      clicksByDay: byDay,
+      topDevices: topN('device'),
+      topOS: topN('os'),
+      topBrowsers: topN('browser'),
+      topReferrers: topN('referrer'),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, message: 'Failed to load analytics' });
+  }
+});
+
+/**
+ * GET /api/analytics
+ * Account-level analytics: aggregate clicks, top links, clicks/day for last 30 days
+ */
+app.get('/api/analytics', userMil, async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const userLinks = await Link.findAll({ where: { userId: req.user.id }, attributes: ['id'], raw: true });
+    const userLinkIds = userLinks.map((l) => l.id);
+
+    const linkFilter = userLinkIds.length > 0 ? { linkId: { [Op.in]: userLinkIds } } : { linkId: { [Op.in]: [] } };
+    const timeFilter = { createdAt: { [Op.gte]: thirtyDaysAgo } };
+
+    const totalClicks = await Click.count({ where: { ...timeFilter, ...linkFilter } });
+    const clicks = await Click.findAll({
+      where: { ...timeFilter, ...linkFilter },
+      attributes: ['createdAt'],
+      order: [['createdAt', 'ASC']],
+    });
+
+    const byDay = {};
+    clicks.forEach((c) => {
+      const day = c.createdAt.toISOString().slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + 1;
+    });
+
+    res.json({ ok: true, totalClicks, clicksByDay: byDay });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, message: 'Failed to load analytics' });
+  }
+});
+
+/**
+ * recordClick — non-blocking click capture helper (used by slug redirect handler)
+ */
+async function recordClick(linkId, req) {
+  try {
+    const ua = req.headers['user-agent'] || '';
+    const { device, os, browser } = parseUserAgent(ua);
+    const referrer = normalizeReferrer(req.headers['referer'] || req.headers['referrer'], req.hostname);
+    const ip = req.ip || req.socket?.remoteAddress || '';
+    const ipHash = hashIp(ip);
+    await Click.create({ linkId, ipHash, device, os, browser, referrer });
+  } catch {
+    // Never block redirects due to analytics errors
+  }
+}
+
 // ── Slug redirect — MUST come after all specific named routes ──────────────
 //
 // This route matches any single-segment path that looks like a slug.
@@ -623,8 +729,9 @@ app.get('/:slug([a-zA-Z0-9_-]{3,50})', async (req, res) => {
       return res.redirect(`/p/${slug}`);
     }
 
-    // Increment click count (non-blocking)
+    // Increment click count and record analytics (non-blocking)
     Link.increment('clicks', { where: { id: link.id } }).catch(() => {});
+    recordClick(link.id, req);
 
     // Redirect
     const statusCode = parseInt(link.redirectType) || 302;
@@ -869,6 +976,149 @@ app.post('/api/sessions/revoke-others', userMil, async (req, res) => {
     res.json({ ok: true, message: 'All other sessions have been revoked' });
   } catch (err) {
     res.status(500).json({ message: 'Failed to revoke sessions' });
+  }
+});
+
+// ============================================================
+// ANALYTICS ROUTES
+// ============================================================
+
+/**
+ * GET /api/analytics/links/:id
+ * Per-link analytics: clicks/day, unique visitors, top device/OS/browser/referrer
+ *
+ * Security: verifies the requested link belongs to the authenticated user before
+ * returning any click data.  Returns 404 (not 403) to avoid leaking link existence.
+ */
+app.get('/api/analytics/links/:id', userMil, async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const linkId = req.params.id;
+
+    // ── Ownership check ────────────────────────────────────────────────────
+    // Dynamically require Link so the route degrades gracefully on branches
+    // where the Link model hasn't been merged in yet.
+    try {
+      const { Link } = require('./database/associations');
+      if (Link) {
+        const link = await Link.findOne({
+          where: { id: linkId, userId: req.user.id },
+        });
+        // Return 404 (not 403) to avoid leaking existence of other users' links
+        if (!link) {
+          return res.status(404).json({ ok: false, message: 'Link not found' });
+        }
+      }
+    } catch {
+      // Link model not available on this branch – skip ownership guard
+    }
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const clicks = await Click.findAll({
+      where: {
+        linkId,
+        createdAt: { [Op.gte]: thirtyDaysAgo },
+      },
+      attributes: ['ipHash', 'device', 'os', 'browser', 'referrer', 'createdAt'],
+      order: [['createdAt', 'ASC']],
+    });
+
+    // Clicks per day
+    const byDay = {};
+    clicks.forEach((c) => {
+      const day = c.createdAt.toISOString().slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + 1;
+    });
+
+    // Unique visitors (by IP hash)
+    const uniqueVisitors = new Set(clicks.map((c) => c.ipHash).filter(Boolean)).size;
+
+    // Top N helper
+    const topN = (field, n = 5) => {
+      const counts = {};
+      clicks.forEach((c) => { if (c[field]) counts[c[field]] = (counts[c[field]] || 0) + 1; });
+      return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, count]) => ({ name, count }));
+    };
+
+    res.json({
+      ok: true,
+      totalClicks: clicks.length,
+      uniqueVisitors,
+      clicksByDay: byDay,
+      topDevices: topN('device'),
+      topOS: topN('os'),
+      topBrowsers: topN('browser'),
+      topReferrers: topN('referrer'),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, message: 'Failed to load analytics' });
+  }
+});
+
+/**
+ * GET /api/analytics
+ * Account-level analytics: aggregate clicks, top links, clicks/day for last 30 days
+ *
+ * Security: scopes all Click queries to the authenticated user's own link IDs so
+ * one user never sees another user's totals.
+ */
+app.get('/api/analytics', userMil, async (req, res) => {
+  try {
+    const { Op } = require('sequelize');
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    // ── Collect this user's link IDs ───────────────────────────────────────
+    let userLinkIds = [];
+    try {
+      const { Link } = require('./database/associations');
+      if (Link) {
+        const userLinks = await Link.findAll({
+          where: { userId: req.user.id },
+          attributes: ['id'],
+          raw: true,
+        });
+        userLinkIds = userLinks.map((l) => l.id);
+      }
+    } catch {
+      // Link model not available on this branch
+    }
+
+    // When the user has no links (or Link model absent) there are no clicks to show.
+    // Sequelize Op.in with an empty array produces a 1=0 predicate — zero rows, safe.
+    const linkFilter = userLinkIds.length > 0
+      ? { linkId: { [Op.in]: userLinkIds } }
+      : { linkId: { [Op.in]: [] } };
+
+    const timeFilter = { createdAt: { [Op.gte]: thirtyDaysAgo } };
+
+    // ── Total clicks (user-scoped) ─────────────────────────────────────────
+    const totalClicks = await Click.count({
+      where: { ...timeFilter, ...linkFilter },
+    });
+
+    // ── Clicks per day (user-scoped) ───────────────────────────────────────
+    const clicks = await Click.findAll({
+      where: { ...timeFilter, ...linkFilter },
+      attributes: ['createdAt'],
+      order: [['createdAt', 'ASC']],
+    });
+
+    const byDay = {};
+    clicks.forEach((c) => {
+      const day = c.createdAt.toISOString().slice(0, 10);
+      byDay[day] = (byDay[day] || 0) + 1;
+    });
+
+    res.json({
+      ok: true,
+      totalClicks,
+      clicksByDay: byDay,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, message: 'Failed to load analytics' });
   }
 });
 
