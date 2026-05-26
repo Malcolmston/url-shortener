@@ -20,7 +20,6 @@ const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } }); // 50 MB
 router.get('/', requireAuth, async (req, res) => {
   try {
     const { File } = require('../../database/associations');
-    const { Op } = require('sequelize');
 
     const where = { userId: req.user.id };
 
@@ -100,8 +99,18 @@ router.put('/:id', requireAuth, async (req, res) => {
     if (!file) return res.status(404).json({ ok: false, message: 'File not found' });
 
     const updates = {};
-    if (name !== undefined)       updates.name = name;
-    if (visibility !== undefined) updates.visibility = Boolean(visibility);
+    if (name !== undefined) updates.name = name;
+
+    if (visibility !== undefined) {
+      // Use explicit allowlist — Boolean('0') and Boolean('false') both return
+      // true in JS, which would silently keep files public when client means private.
+      updates.visibility = (
+        visibility === true ||
+        visibility === 1 ||
+        visibility === '1' ||
+        visibility === 'true'
+      );
+    }
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json({ ok: false, message: 'Nothing to update' });
@@ -150,7 +159,7 @@ router.post('/:id/restore', requireAuth, async (req, res) => {
 async function serveFile(req, res) {
   const { name } = req.params;
   try {
-    const { User, File } = require('../../database/associations');
+    const { File } = require('../../database/associations');
 
     // Public file — no auth required
     const publicFile = await File.findOne({ where: { name, visibility: true } });
