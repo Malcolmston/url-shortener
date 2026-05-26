@@ -6,7 +6,6 @@
  */
 const { Router } = require('express');
 const passport   = require('passport');
-const bcrypt     = require('bcrypt');
 
 const router = Router();
 
@@ -54,6 +53,12 @@ router.post('/login', (req, res, next) => {
 /**
  * POST /api/v1/auth/signup
  * Body: { firstname, lastname, username, password }
+ *
+ * IMPORTANT: Do NOT pre-hash the password before calling User.create().
+ * User.ts has a beforeCreate hook (bcrypt.hashSync) that hashes the raw
+ * password automatically.  Pre-hashing here would store a
+ * bcrypt(bcrypt(password)) hash, causing isValidPassword() to always fail
+ * for newly created accounts.
  */
 router.post('/signup', async (req, res, next) => {
   const { firstname, lastname, username, password } = req.body;
@@ -77,10 +82,8 @@ router.post('/signup', async (req, res, next) => {
       return res.status(409).json({ ok: false, message: 'Username is already taken' });
     }
 
-    const saltRounds = parseInt(process.env.SALT || '10');
-    const hash = await bcrypt.hash(password, saltRounds);
-
-    const user = await User.create({ firstname, lastname, username, password: hash });
+    // Pass raw password — User.ts beforeCreate hook (hashSync) will hash it.
+    const user = await User.create({ firstname, lastname, username, password });
 
     req.logIn(user, (err) => {
       if (err) return next(err);
